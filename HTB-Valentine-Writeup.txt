@@ -1,0 +1,96 @@
+HTB-Valentine-Writeup.txt
+
+ip : 10.10.10.79
+
+Nmap
+----
+- nmap revealed 3 open ports 
+	- 22 running ssh
+	- 80 running http
+	- 443 running https
+
+- nmap shows that the version of ubuntu used in this box is pretty old 
+
+Enumeration
+-----------
+- visiting the site gives an image with a gal and a heart sign
+- the logo in the picture looks like heartbleed which is a vulnerability
+- heartbleed is a logic error that allows an attacker to grab a chunk of random memory which may or maynot include sensitive contents 
+- searched for a heartbleed exploit in google and found one
+- we can also do this through searchsploit 
+- the downloaded script runs and grabs a chunk of memory from the target server 
+	
+	python 32764.py 10.10.10.79 | grep -v "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+
+- we get a lot of junk data and we also get an interesting base64 encoded data
+- copy and decoding it  
+
+	 echo aGVhcnRibGVlZGJlbGlldmV0aGVoeXBlCg== | base64 –d
+
+- it gives us a password 
+
+	creds : heartbleedbelievethehype
+
+- since we have a possible password, we enumerate further to make it useful
+- on performing directory bruteforce against the ip we get a bunck of directories out of which /dev looks interesting 
+- visiting the /dev we get 2 files 
+	- hype_key
+	- notes.txt
+
+- they _key is generally used to denote an ssh key
+- we can view the notes.txt for further clarification
+- it contains a hint that sensitice ciontents maybe going through decoder  
+- we try to view hype_key and we see a bunch of hex bytes 
+- we convert thr hex to text using cyberchef and we get a RSA private key
+- the key contains a space after every character, we need to fix that
+- we can remove the space using sed command 
+
+	sed 's/ //g' key> sshkey
+
+- we have an RSA private key
+
+Shell as hype
+-------------
+- we ssh into the machine with the RSA private key and the password we obtained before 
+
+	ssh -i rsa_key hype@10.10.10.79
+
+- we grab the user.txt
+
+Priv-esc
+--------
+- on further enumeration we viewed the bash_history file and found an interesting command probably ran by root
+
+	tmux –S /.devs/dev_sess
+
+- we can confirm this by checking the running processes using the command 
+
+	ps -ef | grep -i "tmux"
+
+- we still have the tmux session running 
+- we can rerun the command we found in the bash_history to get root access
+
+	tmux –S /.devs/dev_sess
+
+- here we are connecting to the session left by the root by using the -S and the socket 
+-  we are root
+- grab the root flag
+
+
+Alternative way to priv-esc
+---------------------------
+- running the uname -a shows that the box is running on an old kernal
+- googling with the version details confirms that its vulnerable to dirtycow
+- we can search for dirtycow in searchsploit
+- we select one which will add a root user to the passwd file 
+
+	searchsploit -m exploits/linux/local/40839.c
+
+- get it on the box and make it executable 
+- run the exploit and we will be asked to enter new password for the new root user
+- later we can change into that user using that password
+
+	su firefart  
+
+- if we run id command we can see that we are the firefart user who is in the root group  and gid 0
+- grab the root flag

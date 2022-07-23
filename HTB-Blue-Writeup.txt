@@ -1,0 +1,36 @@
+HTB-Blue-Writeup.txt
+
+ip : 10.10.10.40
+
+Nmap
+----
+- nmap revealed a bunch of open ports
+- msrpc, netbios, smb etc which tells us that its a windows box
+- the nmap script scan tells us that the smb signing is disabled which is dangerous
+- it says that the host is running windows 7 professional
+
+Enumeration
+-----------
+- now we enumerate the shares using smbmap
+
+	smbmap -H 10.10.10.40 -u "blah" -p "dgdg"
+
+- we see a few shares but nothing of interest to us 
+- we enumerate smb further with nmap vuln script
+
+	nmap -p 445 -script vuln -oA scans/nmap-smbvulns 10.10.10.40
+
+- we found that the box is vulnerable to MS-17-010
+- MS-17-101 aka Eternal Blue is a famous vulnerability in SMB which allows unauthenticated remote code execution 
+
+Shell as root
+-------------
+- we search for eternal blue in metasploit and found a few scanners and exploits 
+- chose the exploit
+	
+	msf6 exploit(windows/smb/ms17_010_eternalblue)
+
+- we set the options 
+- and run the exploit 
+- we are root 
+- grab the flag

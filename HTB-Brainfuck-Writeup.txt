@@ -1,0 +1,113 @@
+HTB-Brainfuck-Writeup
+
+ip : 10.10.10.17
+
+Nmap
+----
+- nmap revealed several ports 
+	- ssh running on 22
+	- smtp running on 25
+	- pop3 running on 110
+	- imap running on 143
+	- https running on 443
+
+Enumeration
+-----------
+- we can check the TLS certificate for more information
+- we got a few more sub domains from the TLS certificate
+- we add them to the /etc/hosts file 
+
+	brainfuck.htb
+	www.brainfuck.htb
+	sup3rs3cret.brainfuck.htb
+- the email address orestis@brainfuck.htb appears few time as well
+- we visit each of them
+
+	brainfuck.htb -> default nginx page 
+	www.brainfuck.htb -> wordpress site 
+	sup3rs3cret.brainfuck.htb
+
+- found a wordpress site which we can work with for now 
+- we notices a few things from the  wordpress site
+	- a post by user admin
+	- SMTP integration is ready
+	- email address of orestis from before 
+
+- we can enumerate wordpress more using wpscan
+
+	 wpscan --url https://brainfuck.htb --disable-tls-checks --api-token $WPSCAN_API
+
+- wpscan found few vulnerabilities for the plugin WP Support Plus Ticket System 7.1.3
+- we searched searchsploit for WP Support Plus Ticket System 7.1.3 vulnerabilities and found a few
+- we can login as anyone without knowing their password because of the incorrect usage of wp_set_auth_cookie()
+- we use the code 
+
+	<form method="post" action="http://brainfuck.htb/wp-admin/admin-ajax.php">
+  	Username: <input type="text" name="username" value="administrator">
+  	<input type="hidden" name="email" value="sth">
+  	<input type="hidden" name="action" value="loginGuestFacebook">
+  	<input type="submit" value="Login">
+	</form>
+
+- save this in a file, host this using a python server
+- on visiting the hosted page we are provided with a simple form asking us what user we would like to auth as
+- we enter admin and hit login 
+- this will set the admin cookie to the main page 
+- on refreshing the page we can see that we are logged in as admin
+- we try the usual way of getting a shell from a wordpres site by editing the theme or uploading a plugin but it didnt work
+- the files are not editable by the web users 
+- looking around further we see the different plugins used in the page one of which is Easy WP SMTP
+- we hit the settings page of the SMTP and got credentials for orestis 
+- the password is hidden so we can inspect the page to get the clear text password 
+
+	creds : orestis : kHGuERB29DNiNE
+
+- now we start an email client (evolution)
+- set options for receiving email 
+	
+	server type : IMAP
+	server : brainfuck.htb
+	port : 143
+	username : orestis
+
+- click finish and provide the password to get access to the mailbox
+- in the inbox we can see 2 emails
+- the second one is for the secret forum which contains new credentials 
+
+	creds : orestis : kIEnnfEKJ#9Umd0
+
+- with these credentials we can login to the forum page as orestis
+- we can see 3 threads available 
+- these are the conversations between the user orestis and admin 
+- we now know that the ssh key for the user orestis is in the encrypted thread and ssh access is allowed 
+- we check the encrypted thread and it looks like a crypto challenge for us 
+- we use online decipher site (one time pad cipher decipher) to decipher this encrypted message
+- we got the link which leads to the id_rsa key of orestis
+
+Shell as orestis 
+----------------
+- we use ssh2john to generate a hash for the key and crack the hash to find the password  
+
+	ssh2john.py id_rsa > brainfuck-orestis.hash
+	john brainfuck-orestis.hash --wordlist=/usr/share/wordlists/rockyou.txt 
+
+- we got the password 
+
+	creds : orestis : 3poulakia!
+
+- we ssh into the box using the credentials 
+- grab the user flag 
+
+Priv-esc
+--------
+- along with the user flag we see a few other files in orestis home directory
+- the encrypt.sage is a script which points towards encrypted passwords in debug.txt and output.txt
+- when we open debug.txt and output.txt we can see encrypted texts
+- searching the google we found a decrypting script for this 
+
+	http://dann.com.br/alexctf2k17-crypto150-what_is_this_encryption/
+
+- copy the entire script into a text file 
+- mentioned in the  crypto150 algorithm I placed 1st, 2nd & 3rd line of debug.txt equal to p, q, e respectively. 
+- Ct is equal to the content of output.txt as shown below and saved it as decrypt.py
+- run the decrypt.py to grab the root flag 

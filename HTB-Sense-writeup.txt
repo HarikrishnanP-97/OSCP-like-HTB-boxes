@@ -1,0 +1,42 @@
+HTB-Sense-writeup.txt
+
+ip : 10.10.10.60
+
+Nmap
+----
+- nmapscan revealed two ports open 80 and 443. where 80 redirects to 443 running pfsense 
+
+Enumeration
+-----------
+- visiting the site redirects to port 443 which is a default login page for pfsense 
+- the default credentials for pfsense login is admin : pfsense but didnt work
+- done directory bruteforce and found a few nteresting text files 
+- changelog.txt and system-users.txt
+- system-users.txt contains hints on credentials
+- text file says to create a new user rohit with the default password of pfsense as password
+- we head over to login page and tried the credentials 
+
+	creds : rohit : pfsense 
+
+- it worked and we an in
+- we see a default configuration page for pfsense leaking the version details 
+- the running version is pfsense 2.1.3
+- we can search for any known exploits for this version using searchsploit
+- and we found a few including an RCE in ruby (metasploit)
+- checking for an exploit in metasploit 
+- we search for pfsense in metasploit and bingo we got one 
+
+
+Shell as root
+-------------- 
+- use the exploit and provide necessary details 
+
+	RHOST : 10.10.10.60
+	RPORT : 443
+	USERNAME : rohit
+	PASSWORD : pfsense
+
+- run the exploit and we get a meterpreter shell
+- run shell command for a regular shell 
+- we are root 
+- grab the user and root flag 

