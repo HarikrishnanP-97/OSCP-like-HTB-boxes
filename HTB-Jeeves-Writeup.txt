@@ -1,0 +1,132 @@
+HTB-Jeeves-Writeup
+
+IP : 10.10.10.63
+
+Nmap 
+----
+- nmap found 4 open ports 
+	- 80 running Microsoft IIS
+	- 135 running msrpc
+	- 445 running SMB
+	- 50000 running Jetty 
+
+Enumeration
+-----------
+- visiting port 80 returns a web server called ask jeeves
+- searching for anything in the search bar will return /error.html which is a screenshot of an ASP.NET error 
+- directory brute forcing port 80 for paths was not successfull
+- we are not able to connect to port 445 either
+- checking port 50000 returns an error but tells us that its using jetty 9.4 
+- tried brute forcing port 50000 but didnt find anything 
+- but if we change the wordlist we do get a path called /askjeeves
+- visiting port 5000/askjeeves is an instance of jenkins 
+
+Shell as Kohsuke
+----------------
+- on jenkins we can get shell access in two ways 
+	- creating a job 
+	- code execution via script console
+
+creating a job
+--------------
+- click on create new item from the jenkins page 
+- give it a name eg : lord
+- select free style project as the type 
+- on the next step on the bottom click on add build step and choose execute windows batch command and save 
+- on the resulting field we can execute commands 
+- we can start off by checking on what user we will be assigned to when we get execution on the machine 
+- we can enter the command and save
+	
+	cmd /c whoami
+
+- on saving this we will be taken back to the dashboard
+- we can click on build now
+- on checking the build history we can see the output of our command
+- we are kohsuke on the machine 
+
+Code execution via script console
+---------------------------------
+- from the main dashboard we can select manage jenkins
+- choose the script console 
+- we are provided with a field to execute groovy scripts
+- we can try to run whoami
+
+	println "cmd.exe /c whoami".execute().text
+
+- on running this we get the output saying we are kohsuke on the machine
+- we can use this behaviour to get a reverse shell
+- select the nashang powershell reverse shell and copy it here after making appropriate changes 
+
+	println "nashang powershell reverse shell"
+
+- setup a netcat listener with rlwrap
+
+	rlwrap -cAr nc -lvnp 9001
+
+- run the reverse shell 
+- we get a connection back and have a shell as kohsuke
+- grab the user flag
+
+Priv-esc
+--------
+- on checking around the machine we found that there are no other users on the machine besides kohsuke and Administrator 
+- on looking around we found a file called CEH.kdbx in kohsukes home directory
+- CEH.kdbx is a password database created by a local password manager called KeePass
+- since there is a webserver running here we can copy CEH.kdbx file into its directory so that we can access it easily
+
+	PS C:\Users\Administrator\.jenkins\workspace\0xdf> copy \users\kohsuke\Documents\CEH.kdbx .
+
+- click on the workspace on jenkins GUI to show the file
+- download the file onto attacker machine and delete it from the server
+
+ 	del CEH.kdbx
+
+ - we can use keepass2john to create a hash for the database file
+
+ 	keepass2john CEH.kdbx
+
+ - crack the hash with hashcat
+ - use the --user flag since the hash starts in a [username]: format
+
+ 	hashcat CEH.kdbx.hash /usr/share/wordlists/rockyou.txt --user
+
+- we got the password as moonshine1
+
+	creds : moonshine1
+
+- we can use the password against kpcli to extract all the passwords from the KeePass database file 
+
+	kpcli --kdb CEH.kdbx
+
+- we are now connected to its cli
+- use find to list all commands 
+
+	find .
+
+- show command along with -f option will print the passwords one by one 
+ 
+	show -f 0
+	show -f 1
+
+- collect the passwords and form a wordlist with it 
+- we can use it with crackmapexec to pass it around for the Administrator user but none of them worked
+- rechecking the cli we found a hash under Backup stuff
+- we tried to crack the hash online and offline but failed
+- tried passing the hash around using crackmapexec and it worked 
+- we got a hit for Administrator user
+- we can use psexec to get a shell
+
+	psexec.py -hashes aad3b435b51404eeaad3b435b51404ee:e0fb1fb85756c24235ff238cbe81fe00 administrator@10.10.10.63 cmd.exe
+
+- on looking for root flag we found a text file named hm.txt
+- it asks us to look deeper
+- we can check alternate data stream using the command
+
+	dir /R
+
+- we found a stream for root.txt
+- we can pipe that into more to read it 
+
+	more < hm.txt:root.txt
+	
+- grab the root flag  

