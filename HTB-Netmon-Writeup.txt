@@ -1,0 +1,75 @@
+HTB-Netmon-Writeup
+
+IP : 10.10.10.152
+
+Nmap 
+----
+- nmap shows a bunch of open ports 
+	- 21 running FTP
+	- 135 running msrpc
+	- 139 running netbios
+	- 445 tunning SMB
+	- and much more
+
+- nmap tells us that FTP anonymous login is allowed 
+
+Enumeration
+-----------
+- visiting port 80 we get an instance of PRTG Network Monitor aka netmon with a login form  
+- we tried default credentials but none worked
+- we can connect to FTP since we know anonymous login is allowed 
+
+	ftp 10.10.10.152
+
+- we have the user flag in here 
+- grab the user flag
+
+Priv-esc
+--------
+- checking around for leads we can dowload the entire files from FTP into our machine with mget
+- while enumeration we find that the file \ProgramData\Paessler\PRTG Network Monitor has information about the PRTG Network Monitor application 
+- we see a lot of log files and .old, .bat, .bak files 
+- these are good sources for finding credentials or possible leads
+- on PRTG Configuration.old.bak we find credentials
+
+	creds : prtgadmin : PrTg@dmin2018
+
+- we try the creds against the login form we found earlier but failed 
+- since we found password from a backup file from 2018 we can try changing the year in password to current year which is 2019
+- the password becomes 
+
+	creds : PrTg@dmin2019
+
+- trying with the new password we got logged in to the admin panel 
+- googling PRTG we found a blog post about command injection in PRTG
+- this vulnerability adds a new user
+- we can follow the steps in the post and go to
+
+	Setup > Account Settings > Notifications
+
+- click on the plus from the right side and choose add new notification
+- scroll down to the bottom and select execute program
+- select the demo.ps1 file and then enter the following
+
+	 test.txt;net user anon p3nT3st! /add;net localgroup administrators anon /add
+
+- new user creds
+
+	creds : anon : p3nT3st!
+
+- hit save and we will be taken back to the list of notifications 
+- click the box next to my new on, and then the top icon of the bell to test the notification
+- the test notification will be triggered 
+- after waiting for a few seconds we can run smbmap with the new user
+
+	smbmap -H 10.10.10.152 -u anon -p "p3nT3st!"
+
+- we can see that we have full access
+- now we can use psexec.py to get a shell with this credentials 
+
+	psexec.py 'anon:p3nT3st!@10.10.10.152'
+
+- we have a shell as nt authority\system
+- grab the root flag
+
+
