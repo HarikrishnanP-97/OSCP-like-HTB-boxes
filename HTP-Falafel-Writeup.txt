@@ -1,0 +1,142 @@
+HTP-Falafel-Writeup
+
+ip : 10.10.10.73
+
+Nmap
+----
+- we have 2 open ports 
+	- 22 running SSH
+	- 80 running Apache httpd 2.4.18
+
+- one disallowed entry for .txt to robots.txt
+- this is a hint that we need to include .txt extension while doing directory brute force
+
+Enumeration
+----------- 
+- while visiting home page in port 80 we see a few texts and a login button 
+- we got a hostname from the homepage falafel.htb
+- adding this to our /etc/hosts
+- we directory brute force the homepage and got plenty of results out of which the text file cyberlaw.txt looks interesting to us   
+- the important parts of the message is given below 
+	
+	"A user named "chris" has informed me that he could log into MY account without knowing the password,
+	then take FULL CONTROL of the website using the image upload feature.
+	We got a cyber protection on the login form, and a senior php developer worked on filtering the URL of the upload,
+	so I have no idea how he did it."   
+
+- from this we got a username chris and a hint on how to get code execution 
+- checking out the login page we found that we can enumerate for usernames with the help of error messages
+- when we submit an incorrect username and password the site responds with "try again"
+- when we try with the username admin and a password the site responds with “Wrong identification: admin”
+- this proves that we can enumerate valid usernames taking advantage of this behaviour    
+- we can use wfuzz to fuzz for more usernames 
+
+	wfuzz -c -w /opt/SecLists/Usernames/Names/names.txt -d "username=FUZZ&password=abcd" -u http://10.10.10.73/login.php --hh 7074
+
+- we got two usernames 
+	- admin
+	- chris 
+
+- we can run sqlmap against the login page 
+
+	sqlmap -r login-chris.request --level 5 --risk 3 --batch --string "Wrong identification"
+
+- now we can dump the database 
+
+	sqlmap -r login-chris.request --level 5 --risk 3 --batch --string "Wrong identification" --dump
+
+- we got the following hashes 
+
+	admin : 0e462096931906507119562988736854            |
+	chris : d4ee02a22fc872e36d9e3751ba72ddc8 (juggling)
+
+- we have the password for the chris user as juggling 
+
+	creds : chris : juggling 
+
+- we can login as chris with this password
+- on reading the info on chris user profile we can see a lot of references to juggling which might be pointing towards php type juggling attack
+- since we know that the admin hash starts with a 0 we can check with google to identify hashes that starts with 0 and ended up in magic hashes page where we found the magic number string for the md5 hash starting with 0
+- we login into the admin dashboard with the following credentials
+
+	creds : admin : 240610708
+
+Shell as www-data
+-----------------
+- as admin we have access to upload.php 
+- upload.php takes a url for an image file and on successful upload it will use wget to download the image file  
+- if we try to upload a file with non image extension we will get an error message 
+- the admin profile page has a quote that says "know your limits" which sounds like a hint
+- while uploading a file with very long filename (237 characters) we get slightly different error message 
+- we upload a php webshell that ends in .php.png so that the last 4 characters get truncated on upload 
+- the webshell got uploaded successfully
+- lets test it out 
+
+	curl http://10.10.10.73/uploads/0515-1930_45ed3e0a6a8c22db/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.php?cmd=id
+
+- we get the output for the id command 
+- we can swap the contents of the file with a php reverse shell
+- we can upload the file and start a listener in netcat
+
+	nc -lnvp 9001
+
+- on curling the file we get a reverse shell as www-data 
+
+Shell as moshe
+--------------
+- on checking around we found out that thare are 2 users with home directories in the box 
+	- moshe
+	- yossi
+
+- on listing the files in /var/www/html we found connection.php which is interesting 
+- checking it out we got hardcoded credentials for the database 
+
+	creds : moshe : falafelIsReallyTasty
+
+- we tried this password to su into the user moshe and it worked
+- we go a shell as moshe now 
+- grab the user flag 
+
+Shell as yossi
+--------------
+- checking around for possible leads but didnt find anything 
+- we can use w command to check for all the users logged into the machine
+- we found that the user yossi is physically logged into the machine 
+- we can check for the groups we are a part of and we got a few 
+- checking out the files in each groups using find command 
+
+	find / -group video 2>/dev/null
+
+- the /dev/fb0 framebuffer device was interesting
+- we can cat it to a file and move that file over to our box
+- on opening it up with an image viewer (Gimp) we get the password for the user yossi
+- we can SSH as yossi into the box with this password 
+
+Priv-esc
+--------
+- yossi is part of many groups out of which one is disk group 
+- disk group allows raw access (equivalent to root access)
+- the disk group is very dangerous since hard drives in /dev/sd* and /dev/hd* can be read and written bypassing any file system and partition allowing a normal user to disclose, alter, destroy both the partition and the data of suck drives without root privileges 
+- users should never belong to this group
+- we can check for the main file system in the falafel box 
+	
+	cat /proc/cmdline
+	findfs UUID=ccba94d2-0b82....
+
+- we can use debugfs command to enable the file system debugging mode and saw the /root directory access within 
+
+	debugfs /dev/sda1
+
+- this allows us to read the root flag
+- but inorder to get a root shell we can try to read the root users SSH Private key
+
+	debugfs: cat /root/.ssh/id_rsa
+
+- we got the SSH private key 
+- copy the SSH private key and give it necessary permissions
+- ssh into the box as root with the private key
+
+	ssh -i id_rsa root@10.10.10.73
+
+- we got a shell as root
+- grab the root flag   
